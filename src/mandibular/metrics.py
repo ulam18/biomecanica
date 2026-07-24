@@ -37,11 +37,33 @@ class MovementState(str, Enum):
 @dataclass
 class FrameMetrics:
     """Metricas calculadas para um unico frame."""
+    opening_px: float        # abertura bucal bruta, em pixels
     opening_rel: float       # abertura bucal (unidades de referencia facial)
-    lateral_rel: float       # desvio lateral do queixo (com sinal; + = direita da imagem)
+    lateral_px: float        # desvio lateral do queixo, em pixels (com sinal)
+    lateral_rel: float       # desvio lateral do queixo (com sinal; + = eixo x_face positivo)
     face_width_px: float     # referencia facial em pixels (para escala/mm)
     opening_mm: float | None # abertura em mm (se houver calibracao)
     lateral_mm: float | None # desvio lateral em mm (se houver calibracao)
+
+
+def lateral_direction(lateral_rel: float, mirrored: bool, deadzone: float = 0.02) -> str:
+    """
+    Traduz o sinal do desvio lateral em "direita"/"esquerda"/"centro", do
+    ponto de vista do proprio paciente.
+
+    Quando a imagem e espelhada (`mirrored=True`, o padrao, usado para dar
+    uma experiencia de "espelho" mais intuitiva ao usuario), o lado positivo
+    do eixo x_face corresponde a direita do paciente. Sem espelhamento
+    (camera "de frente", como uma foto tirada por outra pessoa), essa relacao
+    se inverte. Sem essa correcao, o rotulo mostrado na tela ficaria trocado
+    sempre que `--no-flip` fosse usado.
+    """
+    if abs(lateral_rel) < deadzone:
+        return "centro"
+    positive_is_right = mirrored
+    if lateral_rel > 0:
+        return "direita" if positive_is_right else "esquerda"
+    return "esquerda" if positive_is_right else "direita"
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -92,7 +114,9 @@ def compute_frame_metrics(
         lateral_mm = lateral_px * mm_per_px
 
     return FrameMetrics(
+        opening_px=opening_px,
         opening_rel=opening_rel,
+        lateral_px=lateral_px,
         lateral_rel=lateral_rel,
         face_width_px=face_width,
         opening_mm=opening_mm,
@@ -147,6 +171,16 @@ class CycleDetector:
     @property
     def is_calibrated(self) -> bool:
         return self._baseline is not None and self._span is not None
+
+    @property
+    def baseline(self) -> float | None:
+        """Abertura de referencia (boca fechada) usada nos limiares."""
+        return self._baseline
+
+    @property
+    def span(self) -> float | None:
+        """Faixa (fechado -> aberto) usada para escalar os limiares."""
+        return self._span
 
     def _thresholds(self, opening: float) -> tuple[float, float]:
         """Retorna (limiar_abrir, limiar_fechar) em unidades de abertura."""

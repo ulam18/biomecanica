@@ -19,10 +19,15 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from mandibular.app import CalibrationAssistant
+from mandibular.calibration import CalibrationAssistant
 from mandibular.config import CycleConfig, Landmark
 from mandibular.landmarks import FaceLandmarks
-from mandibular.metrics import CycleDetector, MovementState, compute_frame_metrics
+from mandibular.metrics import (
+    CycleDetector,
+    MovementState,
+    compute_frame_metrics,
+    lateral_direction,
+)
 from mandibular.recorder import Sample, SessionRecorder
 
 N_LANDMARKS = 478  # modelo Face Landmarker
@@ -104,6 +109,29 @@ def test_mm_calibration():
     assert abs(m.opening_mm - 30.0) < 1e-6, m.opening_mm
 
 
+def test_opening_raw_px_preserved():
+    m = compute_frame_metrics(make_face(opening_px=100.0))
+    assert abs(m.opening_px - 100.0) < 1e-4, m.opening_px
+
+
+# --------------------------------------------------------------------------
+# Direcao do desvio lateral (convencao espelhada)
+# --------------------------------------------------------------------------
+def test_lateral_direction_mirrored():
+    assert lateral_direction(0.2, mirrored=True) == "direita"
+    assert lateral_direction(-0.2, mirrored=True) == "esquerda"
+
+
+def test_lateral_direction_not_mirrored_is_inverted():
+    """Sem espelhamento (camera 'de frente'), o rotulo direita/esquerda se inverte."""
+    assert lateral_direction(0.2, mirrored=False) == "esquerda"
+    assert lateral_direction(-0.2, mirrored=False) == "direita"
+
+
+def test_lateral_direction_deadzone():
+    assert lateral_direction(0.005, mirrored=True) == "centro"
+
+
 # --------------------------------------------------------------------------
 # Deteccao de ciclos
 # --------------------------------------------------------------------------
@@ -165,39 +193,76 @@ def test_state_machine_transitions():
 # --------------------------------------------------------------------------
 # Gravacao / CSV
 # --------------------------------------------------------------------------
+def make_sample(i: int) -> Sample:
+    return Sample(
+        session_id="sessao_teste",
+        frame=i,
+        timestamp=f"{i * 0.1:.3f}s",
+        time_s=i * 0.1,
+        face_detected=True,
+        frame_valid=True,
+        opening_raw=20.0 + i,
+        opening_rel=0.2 + i * 0.01,
+        opening_filtered=0.2 + i * 0.01,
+        opening_mm=None,
+        lateral_raw=-5.0,
+        lateral_rel=-0.05,
+        lateral_filtered=-0.05,
+        lateral_mm=None,
+        direction="esquerda",
+        cycle_state=MovementState.FECHADO,
+        repetitions=0,
+        quality_warning=None,
+    )
+
+
 def test_recorder_csv_roundtrip():
     rec = SessionRecorder()
     for i in range(3):
-        rec.add(Sample(i, i * 0.1, 0.2 + i * 0.01, -0.05, None, None,
-                       MovementState.FECHADO, 0))
+        rec.add(make_sample(i))
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "s.csv")
         rec.to_csv(path)
         with open(path, encoding="utf-8") as f:
             rows = list(csv.reader(f))
-    assert rows[0][0] == "frame" and rows[0][2] == "abertura_rel"
+    assert rows[0][0] == "session_id" and "abertura_relativa" in rows[0]
     assert len(rows) == 4  # cabecalho + 3 amostras
-    assert rows[1][6] == "fechado"
+    assert rows[1][rows[0].index("estado_ciclo")] == "fechado"
+    assert rows[1][rows[0].index("direcao")] == "esquerda"
 
 
 # --------------------------------------------------------------------------
 # Assistente de calibracao
 # --------------------------------------------------------------------------
-def test_calibration_assistant():
+def _run_calibration(closed_v: float, open_v: float) -> object:
     ca = CalibrationAssistant()
     ca.start()
-    t = 0.0
+    # ca.start() ancora phase_start em time.perf_counter() (tempo real do
+    # sistema); "now" precisa ser ancorado no MESMO referencial, senao
+    # elapsed = now - phase_start fica sempre negativo e a fase nunca avanca.
+    t = ca.phase_start
     result = None
     # Alimenta o valor conforme a fase atual do assistente (0=fechado, 1=aberto).
     # O proprio assistente avanca a fase quando o tempo de espera se esgota.
     while ca.active and result is None:
-        v = 0.05 if ca.phase == 0 else 0.55
+        v = closed_v if ca.phase == 0 else open_v
         result = ca.update(v, t)
         t += 1.0 / 40
-    closed, opened = result
-    assert abs(closed - 0.05) < 1e-2, closed
-    assert abs(opened - 0.55) < 1e-2, opened
     assert not ca.active
+    return result
+
+
+def test_calibration_assistant_valid():
+    result = _run_calibration(0.05, 0.55)
+    assert result.valid
+    assert abs(result.closed - 0.05) < 1e-2, result.closed
+    assert abs(result.opened - 0.55) < 1e-2, result.opened
+
+
+def test_calibration_assistant_rejects_small_difference():
+    """Diferenca insuficiente entre fechado e aberto deve ser marcada invalida."""
+    result = _run_calibration(0.10, 0.12)
+    assert not result.valid
 
 
 if __name__ == "__main__":

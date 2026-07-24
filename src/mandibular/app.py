@@ -1,12 +1,14 @@
 """
-Aplicacao em tempo real: captura por webcam, deteccao facial, calculo das
-metricas, interface visual com biofeedback e exportacao de dados.
+Aplicacao em tempo real: captura por webcam, deteccao facial, filtragem,
+controle de qualidade, calculo das metricas, deteccao de ciclos, biofeedback,
+interface visual e exportacao de dados (CSV, JSON, graficos e video opcional).
 
 Controles do teclado:
     C  - calibrar (assistente: boca fechada -> boca aberta)
-    R  - iniciar/parar gravacao da sessao
-    E  - exportar CSV + grafico da sessao gravada
-    Z  - zerar sessao (amostras e contagem de repeticoes)
+    R  - iniciar/parar gravacao dos dados da sessao
+    E  - exportar a sessao gravada
+    Z  - zerar sessao (amostras, filtros e contagem de repeticoes)
+    V  - ligar/desligar gravacao do video anotado
     Q / ESC - sair
 """
 
@@ -19,74 +21,17 @@ from datetime import datetime
 import cv2
 import numpy as np
 
-from .config import AppConfig, HIGHLIGHT_POINTS, Landmark
+from .calibration import CalibrationAssistant
+from .config import AppConfig, Landmark
+from .exporter import export_session, make_session_id
+from .feedback import biofeedback_messages
+from .filters import EMAFilter
 from .landmarks import FaceMeshDetector
-from .metrics import (
-    CycleDetector,
-    MovementState,
-    compute_frame_metrics,
-)
-from .plotting import plot_session
+from .metrics import CycleDetector, MovementState
+from .overlay import C_ALERTA, C_OK, C_REC, C_TEXTO, draw_landmarks, draw_opening_bar, draw_panel
+from .pipeline import process_frame
 from .recorder import Sample, SessionRecorder
-
-
-# Cores (BGR).
-_C_PONTO = (0, 255, 0)
-_C_LINHA = (255, 200, 0)
-_C_TEXTO = (255, 255, 255)
-_C_PAINEL = (30, 30, 30)
-_C_REC = (0, 0, 255)
-_C_OK = (0, 220, 0)
-_C_ALERTA = (0, 180, 255)
-
-
-class CalibrationAssistant:
-    """Assistente de calibracao em duas fases: boca fechada e boca aberta."""
-
-    HOLD_SECONDS = 1.5
-
-    def __init__(self):
-        self.active = False
-        self.phase = 0          # 0 = fechado, 1 = aberto
-        self.phase_start = 0.0
-        self.closed_samples: list[float] = []
-        self.open_samples: list[float] = []
-
-    def start(self) -> None:
-        self.active = True
-        self.phase = 0
-        self.phase_start = time.perf_counter()
-        self.closed_samples.clear()
-        self.open_samples.clear()
-
-    def update(self, opening: float, now: float) -> tuple[float, float] | None:
-        """
-        Coleta amostras da fase atual. Retorna (fechado, aberto) quando a
-        calibracao termina; caso contrario, None.
-        """
-        if not self.active:
-            return None
-
-        elapsed = now - self.phase_start
-        if self.phase == 0:
-            self.closed_samples.append(opening)
-            if elapsed >= self.HOLD_SECONDS:
-                self.phase = 1
-                self.phase_start = now
-        else:
-            self.open_samples.append(opening)
-            if elapsed >= self.HOLD_SECONDS:
-                self.active = False
-                closed = float(np.median(self.closed_samples)) if self.closed_samples else 0.0
-                opened = float(np.max(self.open_samples)) if self.open_samples else closed + 0.1
-                return closed, opened
-        return None
-
-    def instruction(self, now: float) -> str:
-        remaining = max(0.0, self.HOLD_SECONDS - (now - self.phase_start))
-        if self.phase == 0:
-            return f"CALIBRANDO: mantenha a BOCA FECHADA ({remaining:.1f}s)"
-        return f"CALIBRANDO: abra a BOCA ao maximo ({remaining:.1f}s)"
+from .video_recorder import VideoRecorder
 
 
 class MandibularApp:
@@ -97,65 +42,30 @@ class MandibularApp:
         self.recorder = SessionRecorder()
         self.calib = CalibrationAssistant()
 
+        self.filt_opening = EMAFilter(self.cfg.filter.alpha_opening)
+        self.filt_lateral = EMAFilter(self.cfg.filter.alpha_lateral)
+        self.filt_face_width = EMAFilter(self.cfg.filter.alpha_face_width)
+
         self.recording = False
+        self.video_recording = False
+        self.video_writer: VideoRecorder | None = None
+        self.session_id: str | None = None
+        self.session_dir: str | None = None
+
         self.frame_idx = 0
         self.t0 = time.perf_counter()
         self._last_ts_ms = -1
+        self._prev_nasion: np.ndarray | None = None
         self.last_status = ""
 
-    # -- Desenho ----------------------------------------------------------
-    def _draw_landmarks(self, frame: np.ndarray, face) -> None:
-        # Linha media (nasion -> queixo) e eixo inter-ocular.
-        for a, b in [
-            (Landmark.NASION, Landmark.CHIN),
-            (Landmark.EYE_OUTER_LEFT, Landmark.EYE_OUTER_RIGHT),
-            (Landmark.UPPER_LIP_INNER, Landmark.LOWER_LIP_INNER),
-        ]:
-            pa = tuple(np.round(face.point(a)).astype(int))
-            pb = tuple(np.round(face.point(b)).astype(int))
-            cv2.line(frame, pa, pb, _C_LINHA, 1, cv2.LINE_AA)
+    # -- Sessao -------------------------------------------------------------
+    def _ensure_session(self) -> None:
+        if self.session_id is None:
+            self.session_id = make_session_id()
+            self.session_dir = os.path.join(self.cfg.output_dir, self.session_id)
+            os.makedirs(self.session_dir, exist_ok=True)
 
-        for idx in HIGHLIGHT_POINTS:
-            p = tuple(np.round(face.point(idx)).astype(int))
-            cv2.circle(frame, p, 3, _C_PONTO, -1, cv2.LINE_AA)
-
-    def _draw_panel(self, frame: np.ndarray, lines: list[tuple[str, tuple]]) -> None:
-        pad = 12
-        line_h = 26
-        w = 360
-        h = pad * 2 + line_h * len(lines)
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (10 + w, 10 + h), _C_PAINEL, -1)
-        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
-        y = 10 + pad + 18
-        for text, color in lines:
-            cv2.putText(frame, text, (10 + pad, y), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, color, 1, cv2.LINE_AA)
-            y += line_h
-
-    def _draw_opening_bar(self, frame: np.ndarray, opening_rel: float) -> None:
-        """Barra de biofeedback da abertura (0..faixa calibrada)."""
-        h, w = frame.shape[:2]
-        x0, y0 = w - 60, 60
-        bar_h = h - 120
-        cv2.rectangle(frame, (x0, y0), (x0 + 30, y0 + bar_h), (80, 80, 80), 1)
-
-        # Fracao 0..1 relativa a faixa calibrada (ou 0..0.6 como fallback).
-        if self.cycles.is_calibrated:
-            base = self.cycles._baseline or 0.0
-            span = self.cycles._span or 1e-6
-            frac = (opening_rel - base) / span
-        else:
-            frac = opening_rel / 0.6
-        frac = float(np.clip(frac, 0.0, 1.0))
-
-        fill = int(bar_h * frac)
-        cv2.rectangle(frame, (x0, y0 + bar_h - fill), (x0 + 30, y0 + bar_h),
-                      _C_OK, -1)
-        cv2.putText(frame, "abertura", (x0 - 20, y0 - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, _C_TEXTO, 1, cv2.LINE_AA)
-
-    # -- Loop principal ---------------------------------------------------
+    # -- Loop principal -------------------------------------------------------
     def run(self) -> None:
         cap = cv2.VideoCapture(self.cfg.camera_index)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.frame_width)
@@ -165,6 +75,7 @@ class MandibularApp:
             raise RuntimeError(
                 f"Nao foi possivel abrir a camera (indice {self.cfg.camera_index})."
             )
+        cam_fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
 
         win = "Reconhecimento Mandibular - Biomecanica"
         cv2.namedWindow(win, cv2.WINDOW_NORMAL)
@@ -179,42 +90,73 @@ class MandibularApp:
 
                 now = time.perf_counter()
                 t = now - self.t0
-                # Timestamp monotonicamente crescente (exigencia do modo VIDEO).
                 ts_ms = max(int(t * 1000), self._last_ts_ms + 1)
                 self._last_ts_ms = ts_ms
                 face = self.detector.process(frame, ts_ms)
 
+                fr = process_frame(
+                    face,
+                    self.cfg.reference_distance_mm,
+                    self.cfg.flip_horizontal,
+                    self.cfg.quality,
+                    self.filt_opening,
+                    self.filt_lateral,
+                    self.filt_face_width,
+                    prev_nasion=self._prev_nasion,
+                )
+                self._prev_nasion = face.point(Landmark.NASION) if face is not None else None
+
                 if face is not None:
-                    self._draw_landmarks(frame, face)
-                    m = compute_frame_metrics(face, self.cfg.reference_distance_mm)
+                    draw_landmarks(frame, face)
 
-                    # Calibracao guiada tem prioridade sobre a deteccao de ciclos.
-                    calib_result = self.calib.update(m.opening_rel, now)
-                    if calib_result is not None:
-                        self.cycles.calibrate(*calib_result)
-                        self.last_status = "Calibracao concluida."
+                if self.calib.active and fr.frame_valid:
+                    result = self.calib.update(fr.opening_filtered, now)
+                    if result is not None:
+                        if result.valid:
+                            self.cycles.calibrate(result.closed, result.opened)
+                        self.last_status = result.message
 
-                    if not self.calib.active:
-                        self.cycles.update(m.opening_rel, t)
+                if not self.calib.active and fr.frame_valid:
+                    self.cycles.update(fr.opening_filtered, t)
 
-                    self._draw_opening_bar(frame, m.opening_rel)
-                    self._update_hud(frame, m, now)
+                feedback = (
+                    []
+                    if self.calib.active
+                    else biofeedback_messages(fr.opening_display, fr.direction, self.cycles, fr.quality)
+                )
 
-                    if self.recording and not self.calib.active:
-                        self.recorder.add(
-                            Sample(
-                                frame=self.frame_idx,
-                                time_s=t,
-                                opening_rel=m.opening_rel,
-                                lateral_rel=m.lateral_rel,
-                                opening_mm=m.opening_mm,
-                                lateral_mm=m.lateral_mm,
-                                state=self.cycles.state,
-                                repetitions=self.cycles.repetitions,
-                            )
+                if face is not None:
+                    draw_opening_bar(frame, fr.opening_display, self.cycles)
+                self._draw_hud(frame, fr, feedback, now)
+
+                if self.recording:
+                    self._ensure_session()
+                    m = fr.metrics
+                    self.recorder.add(
+                        Sample(
+                            session_id=self.session_id,
+                            frame=self.frame_idx,
+                            timestamp=datetime.now().isoformat(timespec="milliseconds"),
+                            time_s=t,
+                            face_detected=face is not None,
+                            frame_valid=fr.frame_valid,
+                            opening_raw=(m.opening_px if m is not None else None),
+                            opening_rel=(m.opening_rel if m is not None else None),
+                            opening_filtered=fr.opening_filtered,
+                            opening_mm=(m.opening_mm if (m is not None and fr.frame_valid) else None),
+                            lateral_raw=(m.lateral_px if m is not None else None),
+                            lateral_rel=(m.lateral_rel if m is not None else None),
+                            lateral_filtered=fr.lateral_filtered,
+                            lateral_mm=(m.lateral_mm if (m is not None and fr.frame_valid) else None),
+                            direction=fr.direction,
+                            cycle_state=self.cycles.state,
+                            repetitions=self.cycles.repetitions,
+                            quality_warning=fr.quality.message,
                         )
-                else:
-                    self._draw_panel(frame, [("Nenhuma face detectada", _C_ALERTA)])
+                    )
+
+                if self.video_recording and self.video_writer is not None:
+                    self.video_writer.write(frame)
 
                 self.frame_idx += 1
                 cv2.imshow(win, frame)
@@ -227,9 +169,13 @@ class MandibularApp:
                     self.last_status = "Iniciando calibracao..."
                 elif key == ord("r"):
                     self.recording = not self.recording
+                    if self.recording:
+                        self._ensure_session()
                     self.last_status = (
                         "Gravacao iniciada." if self.recording else "Gravacao pausada."
                     )
+                elif key == ord("v"):
+                    self._toggle_video(frame, cam_fps)
                 elif key == ord("e"):
                     self._export()
                 elif key == ord("z"):
@@ -238,58 +184,128 @@ class MandibularApp:
             cap.release()
             cv2.destroyAllWindows()
             self.detector.close()
+            if self.video_writer is not None:
+                self.video_writer.close()
+                self.video_writer = None
 
-    def _update_hud(self, frame, m, now: float) -> None:
+    # -- HUD ------------------------------------------------------------
+    def _draw_hud(self, frame, fr, feedback: list[str], now: float) -> None:
+        m, quality, direction = fr.metrics, fr.quality, fr.direction
         state = self.cycles.state
         state_color = {
-            MovementState.FECHADO: _C_TEXTO,
-            MovementState.ABRINDO: _C_OK,
-            MovementState.ABERTO: _C_OK,
-            MovementState.FECHANDO: _C_ALERTA,
+            MovementState.FECHADO: C_TEXTO,
+            MovementState.ABRINDO: C_OK,
+            MovementState.ABERTO: C_OK,
+            MovementState.FECHANDO: C_ALERTA,
         }[state]
 
-        if m.opening_mm is not None:
-            abertura_txt = f"Abertura: {m.opening_rel:.3f} rel  ({m.opening_mm:.1f} mm)"
-            lateral_txt = f"Desvio lat.: {m.lateral_rel:+.3f} rel  ({m.lateral_mm:+.1f} mm)"
-        else:
-            abertura_txt = f"Abertura: {m.opening_rel:.3f} (rel. larg. facial)"
-            lateral_txt = f"Desvio lateral: {m.lateral_rel:+.3f}"
+        lines: list[tuple[str, tuple]] = []
 
-        lines = [
-            (abertura_txt, _C_TEXTO),
-            (lateral_txt, _C_TEXTO),
-            (f"Estado: {state.value.upper()}", state_color),
-            (f"Repeticoes: {self.cycles.repetitions}", _C_TEXTO),
-            (
-                "Calibrado: sim" if self.cycles.is_calibrated else "Calibrado: nao (tecle C)",
-                _C_OK if self.cycles.is_calibrated else _C_ALERTA,
-            ),
-            (
-                "REC" if self.recording else "[C]alibrar [R]ec [E]xport [Z]erar [Q]sair",
-                _C_REC if self.recording else _C_TEXTO,
-            ),
-        ]
+        if m is None:
+            lines.append(("Face nao detectada", C_ALERTA))
+        else:
+            if m.opening_mm is not None:
+                lines.append((f"Abertura: {m.opening_rel:.3f} rel  ({m.opening_mm:.1f} mm)", C_TEXTO))
+                lines.append((f"Desvio lat.: {m.lateral_rel:+.3f} rel  ({m.lateral_mm:+.1f} mm)  [{direction}]", C_TEXTO))
+            else:
+                lines.append((f"Abertura: {m.opening_rel:.3f} (rel. larg. facial)", C_TEXTO))
+                lines.append((f"Desvio lateral: {m.lateral_rel:+.3f}  [{direction}]", C_TEXTO))
+            if not fr.frame_valid:
+                lines.append((
+                    "Frame invalido - exibindo ultimo valor valido (NAO e nova medicao)",
+                    C_ALERTA,
+                ))
+            # Depuracao: razao de tamanho facial atual, limite minimo e motivo exato.
+            if quality.ratio is not None:
+                lines.append((
+                    f"Razao facial: {quality.ratio:.3f}  (min {quality.min_ratio:.2f} / max {quality.max_ratio:.2f})",
+                    C_TEXTO,
+                ))
+            if quality.message:
+                lines.append((f"{quality.message}", C_ALERTA))
+
+        lines.append((f"Estado: {state.value.upper()}", state_color))
+        if self.cycles.is_calibrated:
+            lines.append((f"Repeticoes: {self.cycles.repetitions}", C_TEXTO))
+        else:
+            lines.append((
+                f"Repeticoes (NAO calibrado, faixa dinamica): {self.cycles.repetitions}",
+                C_ALERTA,
+            ))
+        lines.append((
+            "Calibrado: sim" if self.cycles.is_calibrated else "Calibrado: nao (tecle C)",
+            C_OK if self.cycles.is_calibrated else C_ALERTA,
+        ))
+
+        for msg in feedback:
+            lines.append((msg, C_ALERTA))
+
+        rec_bits = []
+        rec_bits.append("REC dados" if self.recording else None)
+        rec_bits.append("REC video" if self.video_recording else None)
+        rec_txt = " | ".join(b for b in rec_bits if b)
+        lines.append((
+            rec_txt if rec_txt else "[C]alibrar [R]ec [V]ideo [E]xport [Z]erar [Q]sair",
+            C_REC if rec_txt else C_TEXTO,
+        ))
+
         if self.calib.active:
-            lines = [(self.calib.instruction(now), _C_ALERTA)] + lines
+            lines = [(self.calib.instruction(now), C_ALERTA)] + lines
         if self.last_status:
-            lines.append((self.last_status, _C_OK))
-        self._draw_panel(frame, lines)
+            lines.append((self.last_status, C_OK))
+
+        draw_panel(frame, lines)
 
     # -- Acoes ------------------------------------------------------------
+    def _toggle_video(self, frame, cam_fps: float) -> None:
+        if self.video_recording:
+            if self.video_writer is not None:
+                self.video_writer.close()
+                self.video_writer = None
+            self.video_recording = False
+            self.last_status = "Gravacao de video pausada."
+            return
+
+        self._ensure_session()
+        h, w = frame.shape[:2]
+        video_path = os.path.join(self.session_dir, "video.mp4")
+        try:
+            self.video_writer = VideoRecorder(video_path, cam_fps, (w, h))
+            self.video_recording = True
+            self.last_status = "Gravacao de video iniciada."
+        except RuntimeError as exc:
+            self.last_status = f"Falha ao iniciar video: {exc}"
+
     def _export(self) -> None:
         if self.recorder.is_empty:
             self.last_status = "Nada gravado para exportar (tecle R primeiro)."
             return
-        os.makedirs(self.cfg.output_dir, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path = os.path.join(self.cfg.output_dir, f"sessao_{stamp}.csv")
-        png_path = os.path.join(self.cfg.output_dir, f"sessao_{stamp}.png")
-        self.recorder.to_csv(csv_path)
-        use_mm = self.cfg.reference_distance_mm is not None
+        self._ensure_session()
+
+        video_path = None
+        if self.video_writer is not None:
+            self.video_writer.close()
+            self.video_writer = None
+            self.video_recording = False
+            video_path = os.path.join(self.session_dir, "video.mp4")
+
         try:
-            plot_session(self.recorder, png_path, use_mm=use_mm)
-        except ValueError:
-            png_path = "(sem grafico)"
+            paths = export_session(
+                self.recorder,
+                self.cycles,
+                self.session_dir,
+                self.session_id,
+                ref_mm=self.cfg.reference_distance_mm,
+                video_path=video_path,
+                extra_metadata={
+                    "camera_index": self.cfg.camera_index,
+                    "resolucao": [self.cfg.frame_width, self.cfg.frame_height],
+                    "espelhado": self.cfg.flip_horizontal,
+                },
+            )
+        except ValueError as exc:
+            self.last_status = str(exc)
+            return
 
         rep = self.cycles.repeatability()
         rep_txt = ""
@@ -299,17 +315,28 @@ class MandibularApp:
                 f" ampl.CV={rep['amplitude_cv']:.2f}"
                 f" dur.CV={rep['duracao_cv']:.2f}"
             )
-        self.last_status = f"Exportado: {os.path.basename(csv_path)}{rep_txt}"
-        print(f"[export] CSV: {csv_path}")
-        print(f"[export] PNG: {png_path}")
+        self.last_status = f"Exportado: {self.session_id}{rep_txt}"
+        print(f"[export] pasta: {self.session_dir}")
+        for k, v in paths.items():
+            print(f"[export] {k}: {v}")
         if rep:
             print(f"[export] repetibilidade: {rep}")
 
     def _reset(self) -> None:
         self.recorder.clear()
         self.cycles = CycleDetector(self.cfg.cycle)
+        self.filt_opening.reset()
+        self.filt_lateral.reset()
+        self.filt_face_width.reset()
         self.frame_idx = 0
         self.t0 = time.perf_counter()
         self._last_ts_ms = -1
+        self._prev_nasion = None
         self.recording = False
+        if self.video_writer is not None:
+            self.video_writer.close()
+            self.video_writer = None
+        self.video_recording = False
+        self.session_id = None
+        self.session_dir = None
         self.last_status = "Sessao zerada."

@@ -62,6 +62,55 @@ class DetectionConfig:
 
 
 @dataclass
+class FilterConfig:
+    """
+    Parametros do filtro EMA (media movel exponencial) aplicado aos sinais.
+
+    Alpha alto = segue o sinal mais de perto (menos atraso, menos suavizacao);
+    alpha baixo = mais suave, mais atraso. Valores por volta de 0.4-0.6 reduzem
+    ruido de deteccao sem introduzir atraso perceptivel a ~30 fps.
+    """
+    alpha_opening: float = 0.5
+    alpha_lateral: float = 0.5
+    alpha_face_width: float = 0.3
+
+
+@dataclass
+class QualityConfig:
+    """
+    Limiares para classificar a qualidade do frame e orientar o usuario.
+
+    IMPORTANTE: as razoes de tamanho facial sao normalizadas pela LARGURA do
+    frame (face_width_px / frame_width_px), nao pela diagonal. A distancia
+    interocular e uma medida essencialmente horizontal; normalizar pela
+    diagonal faz o limiar variar com a proporcao da imagem (16:9 vs 4:3) sem
+    motivo e, na pratica, exige que o rosto fique perto demais da camera
+    (bug observado: 0.15*diagonal em 1280x720 exigia ~220px de distancia
+    interocular, so atingivel a menos de ~30cm - por isso toda a sessao era
+    marcada como invalida mesmo com o rosto claramente visivel no video).
+
+    Como a razao e uma fracao da largura do frame, os mesmos valores
+    funcionam em qualquer resolucao (640x480, 1280x720, etc.).
+    """
+
+    min_face_width_ratio: float = 0.06
+    # face_width_px / frame_width_px minimo aceitavel. 0.06 corresponde a um
+    # rosto a webcam a ~90-100cm de distancia (uso tipico de mesa); abaixo
+    # disso ha poucos pixels entre os labios para medir a abertura com
+    # confianca. Deliberadamente permissivo: uma face "um pouco distante"
+    # mas ainda claramente utilizavel nao deve ser marcada invalida.
+    max_face_width_ratio: float = 0.65
+    # face_width_px / frame_width_px maximo aceitavel. 0.65 so e excedido com
+    # o rosto extremamente proximo da camera (poucos cm), quando pequenos
+    # movimentos ja tendem a levar os landmarks para fora da imagem.
+    max_roll_deg: float = 30.0
+    # inclinacao maxima da cabeca no plano da imagem (roll), em graus.
+    max_global_jump_fraction: float = 0.25
+    # deslocamento do nasion entre frames consecutivos, como fracao da
+    # largura facial atual; acima disso considera-se movimento brusco.
+
+
+@dataclass
 class CycleConfig:
     """
     Parametros da deteccao de ciclos de abertura/fechamento.
@@ -88,6 +137,8 @@ class AppConfig:
 
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)
+    filter: FilterConfig = field(default_factory=FilterConfig)
+    quality: QualityConfig = field(default_factory=QualityConfig)
 
     # Calibracao opcional para converter unidades relativas em milimetros.
     # Se informado, e a distancia real (mm) entre os cantos externos dos olhos.
