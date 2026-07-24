@@ -23,14 +23,28 @@ DEFAULT_MODEL_PATH = os.path.join("models", "face_landmarker.task")
 
 @dataclass
 class FaceLandmarks:
-    """Landmarks de uma face detectada, em coordenadas de pixel (x, y)."""
+    """Landmarks de uma face detectada, em coordenadas de pixel (x, y).
+
+    Opcionalmente carrega a profundidade relativa `depth` (coordenada z do
+    modelo, reescalada para pixels), util para estimar a rotacao horizontal da
+    cabeca (yaw). Pode ser None quando a fonte nao fornece z.
+    """
     points: np.ndarray          # shape (N, 2), float32, em pixels
     image_width: int
     image_height: int
+    depth: np.ndarray | None = None  # shape (N,), profundidade relativa (px)
 
     def point(self, index: int) -> np.ndarray:
         """Retorna o ponto (x, y) em pixels para o indice informado."""
         return self.points[index]
+
+    @property
+    def has_depth(self) -> bool:
+        return self.depth is not None
+
+    def z(self, index: int) -> float:
+        """Profundidade relativa do ponto (0.0 se indisponivel)."""
+        return 0.0 if self.depth is None else float(self.depth[index])
 
 
 class FaceMeshDetector:
@@ -97,7 +111,10 @@ class FaceMeshDetector:
             [(lm.x * w, lm.y * h) for lm in face],
             dtype=np.float32,
         )
-        return FaceLandmarks(points=pts, image_width=w, image_height=h)
+        # z do modelo tem escala aproximada da largura normalizada; reescala
+        # para pixels (x w) para ficar comparavel as coordenadas (x, y).
+        depth = np.array([lm.z * w for lm in face], dtype=np.float32)
+        return FaceLandmarks(points=pts, image_width=w, image_height=h, depth=depth)
 
     def close(self) -> None:
         self._landmarker.close()
