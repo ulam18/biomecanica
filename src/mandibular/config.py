@@ -35,6 +35,18 @@ class Landmark:
     EYE_INNER_LEFT = 133  # canto interno do olho esquerdo
     EYE_INNER_RIGHT = 362 # canto interno do olho direito
 
+    # Pontos adicionais para simetria (pares esquerda/direita) e perfil
+    NOSE_ALA_LEFT = 129   # asa do nariz, lado esquerdo
+    NOSE_ALA_RIGHT = 358  # asa do nariz, lado direito
+    CHEEK_LEFT = 234      # contorno da bochecha esquerda
+    CHEEK_RIGHT = 454     # contorno da bochecha direita
+    FOREHEAD = 10         # topo da testa (proximo ao trichion), linha media
+    GLABELA = 9           # glabela (entre as sobrancelhas), linha media
+    SUBNASALE = 2         # base do nariz / columela (subnasal)
+    LABIALE_SUP = 0       # labiale superius (borda do labio superior)
+    LABIALE_INF = 17      # labiale inferius (borda do labio inferior)
+    SUBLABIALE = 200      # sulco mentolabial (entre labio inferior e mento)
+
 
 # Conjunto de pontos desenhados/destacados na interface.
 HIGHLIGHT_POINTS = [
@@ -47,6 +59,18 @@ HIGHLIGHT_POINTS = [
     Landmark.CHIN,
     Landmark.EYE_OUTER_LEFT,
     Landmark.EYE_OUTER_RIGHT,
+]
+
+
+# Pares de landmarks simetricos (regiao, esquerda, direita) para o indice de
+# simetria facial (vista frontal). Numa face frontal simetrica, cada par e o
+# espelho do outro em relacao a linha media.
+SYMMETRIC_PAIRS = [
+    ("olhos", Landmark.EYE_OUTER_LEFT, Landmark.EYE_OUTER_RIGHT),
+    ("olhos", Landmark.EYE_INNER_LEFT, Landmark.EYE_INNER_RIGHT),
+    ("nariz", Landmark.NOSE_ALA_LEFT, Landmark.NOSE_ALA_RIGHT),
+    ("boca", Landmark.MOUTH_LEFT, Landmark.MOUTH_RIGHT),
+    ("face", Landmark.CHEEK_LEFT, Landmark.CHEEK_RIGHT),
 ]
 
 

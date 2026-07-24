@@ -22,8 +22,13 @@ from enum import Enum
 
 import numpy as np
 
-from .config import CycleConfig, Landmark
+from .config import CycleConfig, Landmark, SYMMETRIC_PAIRS
 from .landmarks import FaceLandmarks
+
+# Escala do indice de simetria: um desvio medio (relativo a largura facial)
+# igual a este valor leva o indice a 0. 0.15 (~15%) e generoso: faces normais
+# ficam bem acima de 0.9.
+SYMMETRY_SCALE = 0.15
 
 
 class MovementState(str, Enum):
@@ -267,3 +272,298 @@ class CycleDetector:
             "duracao_dp_s": float(np.std(durations)),
             "duracao_cv": cv(durations),
         }
+
+
+# ===========================================================================
+# Analise facial frontal (simetria/proporcoes) e de perfil (angulos)
+# Modulos adicionados sobre a arquitetura de pipeline: funcoes puras que
+# recebem FaceLandmarks e nao dependem do recorder/app.
+# ===========================================================================
+def _face_frame(face: FaceLandmarks) -> tuple[float, np.ndarray, np.ndarray]:
+    """
+    Constroi o referencial da face a partir do eixo inter-ocular.
+
+    Retorna (largura_facial_px, x_face, y_face), onde x_face aponta do canto
+    externo do olho esquerdo para o direito e y_face e perpendicular, para
+    baixo na imagem.
+    """
+    eye_l = face.point(Landmark.EYE_OUTER_LEFT)
+    eye_r = face.point(Landmark.EYE_OUTER_RIGHT)
+    face_width = float(np.linalg.norm(eye_r - eye_l))
+    if face_width < 1e-6:
+        face_width = 1e-6
+    x_face = _unit(eye_r - eye_l)
+    y_face = np.array([-x_face[1], x_face[0]], dtype=np.float32)
+    return face_width, x_face, y_face
+
+
+def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Angulo (graus) no vertice b, formado pelos segmentos b->a e b->c."""
+    v1 = a - b
+    v2 = c - b
+    n1 = float(np.linalg.norm(v1))
+    n2 = float(np.linalg.norm(v2))
+    if n1 < 1e-6 or n2 < 1e-6:
+        return 0.0
+    cos = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cos)))
+
+
+def _cant_deg(face: FaceLandmarks) -> float:
+    """
+    Angulo (graus) entre a linha dos olhos (bipupilar) e a linha dos cantos da
+    boca (intercomissural). ~0 quando paralelas (face simetrica frontal).
+    """
+    eye_axis = face.point(Landmark.EYE_OUTER_RIGHT) - face.point(Landmark.EYE_OUTER_LEFT)
+    mouth_axis = face.point(Landmark.MOUTH_RIGHT) - face.point(Landmark.MOUTH_LEFT)
+    a_eye = np.arctan2(eye_axis[1], eye_axis[0])
+    a_mouth = np.arctan2(mouth_axis[1], mouth_axis[0])
+    cant = np.degrees(a_mouth - a_eye)
+    return float((cant + 180.0) % 360.0 - 180.0)  # normaliza para [-180, 180]
+
+
+@dataclass
+class SymmetryMetrics:
+    """
+    Metricas de simetria facial na vista frontal.
+
+    - `index` (0..1): 1 = perfeitamente simetrico.
+    - `by_region`: indice por regiao (olhos, nariz, boca, face).
+    - `midline_offset_rel`: deslocamento medio (com sinal) dos pares em relacao
+      a linha media (confunde assimetria real com rotacao; por isso o yaw e
+      reportado a parte).
+    - `yaw_proxy`: estimativa da rotacao horizontal da cabeca (~0 = frontal).
+    - `is_frontal`: True se |yaw_proxy| estiver dentro da tolerancia.
+    - `cant_deg`: angulo entre a linha bipupilar e a intercomissural.
+    """
+    index: float
+    by_region: dict[str, float]
+    midline_offset_rel: float
+    yaw_proxy: float
+    is_frontal: bool
+    cant_deg: float
+
+
+def compute_symmetry(
+    face: FaceLandmarks, frontal_yaw_tol: float = 0.12
+) -> SymmetryMetrics:
+    """
+    Calcula a simetria facial a partir de pares de landmarks espelhados.
+
+    IMPORTANTE: a simetria so e interpretavel na vista FRONTAL. Quando a cabeca
+    esta girada (`is_frontal` = False), a projecao 2D distorce os pares.
+    """
+    face_width, x_face, y_face = _face_frame(face)
+    nasion = face.point(Landmark.NASION)
+
+    def uv(idx: int) -> tuple[float, float]:
+        p = face.point(idx) - nasion
+        return float(np.dot(p, x_face)), float(np.dot(p, y_face))
+
+    region_devs: dict[str, list[float]] = {}
+    offsets: list[float] = []
+    for region, left_idx, right_idx in SYMMETRIC_PAIRS:
+        u_l, v_l = uv(left_idx)
+        u_r, v_r = uv(right_idx)
+        horiz = (u_l + u_r)            # ~0 se espelhados
+        vert = (v_l - v_r)             # ~0 se na mesma altura
+        dev = float(np.hypot(horiz, vert)) / face_width
+        region_devs.setdefault(region, []).append(dev)
+        offsets.append((u_l + u_r) / 2.0 / face_width)
+
+    def dev_to_index(dev: float) -> float:
+        return float(np.clip(1.0 - dev / SYMMETRY_SCALE, 0.0, 1.0))
+
+    by_region = {
+        r: dev_to_index(float(np.mean(devs))) for r, devs in region_devs.items()
+    }
+    all_devs = [d for devs in region_devs.values() for d in devs]
+    index = dev_to_index(float(np.mean(all_devs)))
+    midline_offset_rel = float(np.mean(offsets))
+
+    if face.has_depth:
+        z_l = face.z(Landmark.EYE_OUTER_LEFT)
+        z_r = face.z(Landmark.EYE_OUTER_RIGHT)
+        yaw_proxy = (z_l - z_r) / face_width
+    else:
+        u_nose, _ = uv(Landmark.NOSE_TIP)
+        yaw_proxy = u_nose / (face_width / 2.0)
+
+    is_frontal = abs(yaw_proxy) <= frontal_yaw_tol
+
+    return SymmetryMetrics(
+        index=index,
+        by_region=by_region,
+        midline_offset_rel=midline_offset_rel,
+        yaw_proxy=float(yaw_proxy),
+        is_frontal=bool(is_frontal),
+        cant_deg=_cant_deg(face),
+    )
+
+
+@dataclass
+class FrontalAngles:
+    """
+    Angulos da vista frontal (medidas relativas/intrasujeito -- SEM corte
+    clinico; a literatura trata toda face como assimetrica).
+
+    - `mand_deviation_deg`: inclinacao (com sinal) da linha media mandibular
+      (nasio -> mento) vs vertical da linha media facial. 0 = mento alinhado;
+      + = desvio para a direita da imagem. Base do biofeedback de evolucao.
+    - `cant_deg`: angulo entre a linha dos olhos e a linha da boca.
+    """
+    mand_deviation_deg: float
+    cant_deg: float
+
+
+def compute_frontal_angles(face: FaceLandmarks) -> FrontalAngles:
+    """Calcula o angulo de desvio mandibular e o cant na vista frontal."""
+    _, x_face, y_face = _face_frame(face)
+    v = face.point(Landmark.CHIN) - face.point(Landmark.NASION)
+    u = float(np.dot(v, x_face))
+    w = float(np.dot(v, y_face))
+    mand = float(np.degrees(np.arctan2(u, w)))
+    return FrontalAngles(mand_deviation_deg=mand, cant_deg=_cant_deg(face))
+
+
+@dataclass
+class ProportionMetrics:
+    """
+    Proporcoes faciais classicas (vista frontal, estimativas 2D). Os valores
+    "ideais" sao canones esteticos, NAO limiares clinicos.
+
+    - `thirds_ratio`: (Glabela->Subnasal)/(Subnasal->Mento). Canon = 1.0.
+    - `fifths_ratio`: largura facial / largura de um olho. Canon = 5.0.
+    - `intercanthal_alar_ratio`: intercantal medial / interalar. Canon ~1.0.
+    - `mouth_within_canon`: interalar < intercomissural < interpupilar.
+    """
+    thirds_ratio: float
+    fifths_ratio: float
+    intercanthal_alar_ratio: float
+    mouth_within_canon: bool
+
+
+def compute_proportions(face: FaceLandmarks) -> ProportionMetrics:
+    """Calcula proporcoes faciais frontais (tercos, quintos, canones)."""
+    def dist(i: int, j: int) -> float:
+        return float(np.linalg.norm(face.point(i) - face.point(j)))
+
+    mid_third = dist(Landmark.GLABELA, Landmark.SUBNASALE)
+    low_third = dist(Landmark.SUBNASALE, Landmark.CHIN)
+    thirds_ratio = mid_third / low_third if low_third > 1e-6 else 0.0
+
+    face_width = dist(Landmark.CHEEK_LEFT, Landmark.CHEEK_RIGHT)
+    eye_width = dist(Landmark.EYE_OUTER_LEFT, Landmark.EYE_INNER_LEFT)
+    fifths_ratio = face_width / eye_width if eye_width > 1e-6 else 0.0
+
+    intercanthal = dist(Landmark.EYE_INNER_LEFT, Landmark.EYE_INNER_RIGHT)
+    interalar = dist(Landmark.NOSE_ALA_LEFT, Landmark.NOSE_ALA_RIGHT)
+    intercanthal_alar_ratio = intercanthal / interalar if interalar > 1e-6 else 0.0
+
+    intercommissural = dist(Landmark.MOUTH_LEFT, Landmark.MOUTH_RIGHT)
+    interpupillary = dist(Landmark.EYE_OUTER_LEFT, Landmark.EYE_OUTER_RIGHT)
+    mouth_within_canon = interalar < intercommissural < interpupillary
+
+    return ProportionMetrics(
+        thirds_ratio=thirds_ratio,
+        fifths_ratio=fifths_ratio,
+        intercanthal_alar_ratio=intercanthal_alar_ratio,
+        mouth_within_canon=bool(mouth_within_canon),
+    )
+
+
+@dataclass
+class ProfileMetrics:
+    """
+    Metricas do rosto em vista de perfil (plano sagital) -- ESTIMATIVAS. A
+    simetria E->D NAO e mensuravel de perfil.
+    """
+    facing: str
+    chin_projection_rel: float
+    nose_projection_rel: float
+    convexity_deg: float
+    opening_rel: float
+    yaw_proxy: float
+
+
+def compute_profile_metrics(face: FaceLandmarks) -> ProfileMetrics:
+    """Calcula metricas sagitais do rosto de perfil."""
+    face_width, x_face, y_face = _face_frame(face)
+    nasion = face.point(Landmark.NASION)
+    chin = face.point(Landmark.CHIN)
+
+    face_height = float(np.linalg.norm(chin - nasion))
+    if face_height < 1e-6:
+        face_height = 1e-6
+
+    def horiz(idx: int) -> float:
+        return float(np.dot(face.point(idx) - nasion, x_face))
+
+    nose_h = horiz(Landmark.NOSE_TIP)
+    chin_h = horiz(Landmark.CHIN)
+    facing = "direito" if nose_h >= 0 else "esquerdo"
+
+    def uv_pt(idx: int) -> np.ndarray:
+        p = face.point(idx) - nasion
+        return np.array([np.dot(p, x_face), np.dot(p, y_face)], dtype=np.float32)
+
+    convexity = _angle_deg(
+        uv_pt(Landmark.FOREHEAD), uv_pt(Landmark.SUBNASALE), uv_pt(Landmark.CHIN)
+    )
+
+    upper = face.point(Landmark.UPPER_LIP_INNER)
+    lower = face.point(Landmark.LOWER_LIP_INNER)
+    opening_rel = abs(float(np.dot(lower - upper, y_face))) / face_width
+
+    if face.has_depth:
+        z_l = face.z(Landmark.EYE_OUTER_LEFT)
+        z_r = face.z(Landmark.EYE_OUTER_RIGHT)
+        yaw_proxy = (z_l - z_r) / face_width
+    else:
+        yaw_proxy = nose_h / (face_width / 2.0)
+
+    return ProfileMetrics(
+        facing=facing,
+        chin_projection_rel=chin_h / face_height,
+        nose_projection_rel=nose_h / face_height,
+        convexity_deg=convexity,
+        opening_rel=opening_rel,
+        yaw_proxy=float(yaw_proxy),
+    )
+
+
+@dataclass
+class ProfileAngles:
+    """
+    Angulos de tecido mole do perfil (graus) -- ESTIMATIVAS 2D.
+
+    - `convexidade_facial`: G-Sn-Pg.
+    - `convexidade_total`: G-Prn-Pg (inclui o nariz).
+    - `nasofrontal`: G-N-Prn.
+    - `nasolabial`: ~Prn-Sn-Ls.
+    - `labiomental`: Li-Sm-Pg.
+    """
+    convexidade_facial: float
+    convexidade_total: float
+    nasofrontal: float
+    nasolabial: float
+    labiomental: float
+
+
+def compute_profile_angles(face: FaceLandmarks) -> ProfileAngles:
+    """Calcula os angulos de perfil de tecido mole."""
+    g = face.point(Landmark.GLABELA)
+    n = face.point(Landmark.NASION)
+    prn = face.point(Landmark.NOSE_TIP)
+    sn = face.point(Landmark.SUBNASALE)
+    pg = face.point(Landmark.CHIN)
+    ls = face.point(Landmark.LABIALE_SUP)
+    li = face.point(Landmark.LABIALE_INF)
+    sm = face.point(Landmark.SUBLABIALE)
+    return ProfileAngles(
+        convexidade_facial=_angle_deg(g, sn, pg),
+        convexidade_total=_angle_deg(g, prn, pg),
+        nasofrontal=_angle_deg(g, n, prn),
+        nasolabial=_angle_deg(prn, sn, ls),
+        labiomental=_angle_deg(li, sm, pg),
+    )

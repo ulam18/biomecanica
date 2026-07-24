@@ -114,6 +114,64 @@ def plot_opening_time(recorder: SessionRecorder, path: str, use_mm: bool = False
     return path
 
 
+def _to_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def plot_evolution(rows: list[dict], path: str, patient: str = "") -> str:
+    """
+    Grafico de evolucao do paciente ENTRE sessoes (a partir do historico em
+    evolution.load_evolution). Mostra o desvio mandibular (lateral e angular) e
+    a simetria ao longo das sessoes, com alvo em 0 para o desvio -- a melhora do
+    tratamento aparece como aproximacao de 0.
+    """
+    if not rows:
+        raise ValueError("Historico vazio: nada a plotar.")
+    _ensure_parent(path)
+
+    x = list(range(1, len(rows) + 1))
+    labels = [str(r.get("data", ""))[:10] for r in rows]
+
+    lat_mm = [_to_float(r.get("desvio_lat_medio_mm")) for r in rows]
+    if all(v is not None for v in lat_mm):
+        lat, lat_unit = lat_mm, "mm"
+    else:
+        lat = [_to_float(r.get("desvio_lat_medio_rel")) for r in rows]
+        lat_unit = "rel."
+    ang = [_to_float(r.get("desvio_mandib_medio_deg")) for r in rows]
+    sym = [_to_float(r.get("simetria_media")) for r in rows]
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    ax1.set_title((f"Evolucao do paciente {patient}").strip() or "Evolucao do paciente")
+
+    ax1.plot(x, lat, "o-", color="#2ca02c")
+    ax1.axhline(0.0, color="gray", linewidth=1.0, linestyle="--")
+    ax1.set_ylabel(f"Desvio lateral do\nmento [{lat_unit}]")
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(x, ang, "o-", color="#1f77b4")
+    ax2.axhline(0.0, color="gray", linewidth=1.0, linestyle="--")
+    ax2.set_ylabel("Desvio mandibular\nangular [graus]")
+    ax2.grid(True, alpha=0.3)
+
+    sym_pct = [None if v is None else v * 100 for v in sym]
+    ax3.plot(x, sym_pct, "o-", color="#9467bd")
+    ax3.set_ylim(0, 100)
+    ax3.set_ylabel("Simetria [%]")
+    ax3.set_xlabel("Sessao")
+    ax3.grid(True, alpha=0.3)
+    ax3.set_xticks(x)
+    ax3.set_xticklabels([f"{i}\n{d}" for i, d in zip(x, labels)], fontsize=7)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return path
+
+
 def plot_lateral_time(recorder: SessionRecorder, path: str, use_mm: bool = False) -> str:
     """Desvio lateral ao longo do tempo: bruto (fino) + filtrado (principal, so onde valido)."""
     if recorder.is_empty:
