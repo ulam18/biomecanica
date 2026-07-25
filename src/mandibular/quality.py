@@ -20,6 +20,7 @@ import numpy as np
 
 from .config import Landmark, QualityConfig
 from .landmarks import FaceLandmarks
+from .metrics import estimate_head_pose
 
 
 class FrameQuality(str, Enum):
@@ -36,6 +37,9 @@ class QualityResult:
     ratio: float | None = None  # face_width_px / frame_width_px (None se nao calculavel)
     min_ratio: float = 0.0
     max_ratio: float = 0.0
+    roll_deg: float | None = None  # None se nao calculado (face ausente/fora da imagem/tam. invalido)
+    yaw_deg: float | None = None
+    pitch_deg: float | None = None
 
 
 def assess_quality(
@@ -87,12 +91,26 @@ def assess_quality(
             reason="muito_perto", ratio=ratio, min_ratio=min_r, max_ratio=max_r,
         )
 
-    dx, dy = eye_r - eye_l
-    roll_deg = float(np.degrees(np.arctan2(dy, dx)))
-    if abs(roll_deg) > config.max_roll_deg:
+    pose = estimate_head_pose(face)
+    pose_kwargs = dict(roll_deg=pose.roll_deg, yaw_deg=pose.yaw_deg, pitch_deg=pose.pitch_deg)
+
+    if abs(pose.roll_deg) > config.max_roll_deg:
         return QualityResult(
             FrameQuality.INVALIDA, "Mantenha a cabeca estavel (nao incline)",
             reason="inclinacao_excessiva", ratio=ratio, min_ratio=min_r, max_ratio=max_r,
+            **pose_kwargs,
+        )
+    if pose.yaw_deg is not None and abs(pose.yaw_deg) > config.max_yaw_deg:
+        return QualityResult(
+            FrameQuality.INVALIDA, "Rosto muito virado - olhe para a camera",
+            reason="yaw_excessivo", ratio=ratio, min_ratio=min_r, max_ratio=max_r,
+            **pose_kwargs,
+        )
+    if pose.pitch_deg is not None and abs(pose.pitch_deg) > config.max_pitch_deg:
+        return QualityResult(
+            FrameQuality.INVALIDA, "Incline menos a cabeca (para cima/baixo)",
+            reason="pitch_excessivo", ratio=ratio, min_ratio=min_r, max_ratio=max_r,
+            **pose_kwargs,
         )
 
     if prev_nasion is not None:
@@ -101,9 +119,11 @@ def assess_quality(
             return QualityResult(
                 FrameQuality.INVALIDA, "Mantenha a cabeca estavel",
                 reason="movimento_brusco", ratio=ratio, min_ratio=min_r, max_ratio=max_r,
+                **pose_kwargs,
             )
 
     return QualityResult(
         FrameQuality.VALIDA, None,
         reason=None, ratio=ratio, min_ratio=min_r, max_ratio=max_r,
+        **pose_kwargs,
     )

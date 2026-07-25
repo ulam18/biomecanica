@@ -160,6 +160,7 @@ def analyze(
             cycles.update(fr.opening_filtered, t)
 
         m = fr.metrics
+        q = fr.quality
         recorder.add(
             Sample(
                 session_id=f"{base}_{session_id}",
@@ -179,7 +180,12 @@ def analyze(
                 direction=fr.direction,
                 cycle_state=cycles.state,
                 repetitions=cycles.repetitions,
-                quality_warning=fr.quality.message,
+                quality_warning=q.message,
+                quality_reason=q.reason,
+                face_size_ratio=q.ratio,
+                roll_deg=q.roll_deg,
+                yaw_deg=q.yaw_deg,
+                pitch_deg=q.pitch_deg,
             )
         )
 
@@ -201,9 +207,12 @@ def analyze(
     detector.close()
     if cap2 is not None:
         cap2.release()
+    video_frame_count = video_writer.frame_count if video_writer is not None else 0
+    video_dur = video_writer.duration_s if video_writer is not None else 0.0
     if video_writer is not None:
         video_writer.close()
 
+    session_duration_s = frame_results[-1][1] if frame_results else 0.0
     paths = export_session(
         recorder,
         cycles,
@@ -211,7 +220,18 @@ def analyze(
         f"{base}_{session_id}",
         ref_mm=ref_mm,
         video_path=(os.path.join(session_dir, "video.mp4") if save_video else None),
-        extra_metadata={"origem": "analise_offline", "arquivo_video": path},
+        extra_metadata={
+            "origem": "analise_offline",
+            "arquivo_video": path,
+            "resolucao": [frame_w, frame_h],
+            "espelhado": mirrored,
+            "duracao_sessao_s": session_duration_s,
+            "repeticoes_sessao": cycles.repetitions,
+            "video_habilitado": save_video,
+            "video_frames": video_frame_count,
+            "video_fps": fps,
+            "video_duracao_s": video_dur,
+        },
     )
 
     _print_summary(recorder, cycles, ref_mm)

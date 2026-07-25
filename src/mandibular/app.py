@@ -5,11 +5,20 @@ interface visual e exportacao de dados (CSV, JSON, graficos e video opcional).
 
 Controles do teclado:
     C  - calibrar (assistente: boca fechada -> boca aberta)
-    R  - iniciar/parar gravacao dos dados da sessao
-    E  - exportar a sessao gravada
-    Z  - zerar sessao (amostras, filtros e contagem de repeticoes)
-    V  - ligar/desligar gravacao do video anotado
-    Q / ESC - sair
+    X  - apagar a calibracao atual
+    V  - habilita/desabilita a gravacao de video para a PROXIMA sessao
+    R  - inicia/encerra uma sessao (dados + video, SINCRONIZADOS)
+    E  - exporta a sessao encerrada (CSV, resumo, metadados, graficos, video)
+    Z  - zera a sessao atual (preserva a calibracao)
+    Q / ESC - sair (finaliza com seguranca uma sessao ainda ativa)
+
+Sincronizacao R/vídeo (ver secao 11 do escopo): pressionar R gera um
+session_id, zera o contador local de frames/tempo e os ciclos (preservando a
+calibracao), e -- se V estiver habilitado -- abre o VideoRecorder no MESMO
+instante em que a gravacao de dados comeca. R novamente encerra os dois ao
+mesmo tempo. O timestamp entregue ao MediaPipe (`_last_ts_ms`/`t0`) e global
+e NUNCA e resetado por R/Z: resetar o "relogio" que o FaceLandmarker usa
+(modo VIDEO exige timestamps estritamente crescentes) travaria a deteccao.
 """
 
 from __future__ import annotations
@@ -46,24 +55,122 @@ class MandibularApp:
         self.filt_lateral = EMAFilter(self.cfg.filter.alpha_lateral)
         self.filt_face_width = EMAFilter(self.cfg.filter.alpha_face_width)
 
+        # -- Estado da sessao (R) ---------------------------------------
         self.recording = False
-        self.video_recording = False
+        self.video_enabled_next = False   # V: vale para a PROXIMA sessao iniciada
+        self.video_enabled = False        # decisao congelada da sessao atual/ultima
+        self.video_recording = False      # video_writer ativo nesta sessao
         self.video_writer: VideoRecorder | None = None
         self.session_id: str | None = None
         self.session_dir: str | None = None
+        self._session_frame_idx = 0
+        self._session_start_t: float | None = None      # em segundos, mesmo relogio de `t`
+        self._session_start_wall: datetime | None = None
+        self._session_end_wall: datetime | None = None
+        self._session_duration_s: float | None = None
+        # Capturados no encerramento do video (R de parada), antes de fechar
+        # o VideoRecorder, para irem para os metadados na exportacao (E).
+        self._video_frame_count = 0
+        self._video_fps = 0.0
+        self._video_duration_s = 0.0
 
+        # -- Relogio global (NUNCA resetado por R/Z: o FaceLandmarker em modo
+        # VIDEO exige timestamps estritamente crescentes durante toda a vida
+        # do detector) --------------------------------------------------
         self.frame_idx = 0
         self.t0 = time.perf_counter()
         self._last_ts_ms = -1
         self._prev_nasion: np.ndarray | None = None
         self.last_status = ""
 
-    # -- Sessao -------------------------------------------------------------
-    def _ensure_session(self) -> None:
-        if self.session_id is None:
-            self.session_id = make_session_id()
-            self.session_dir = os.path.join(self.cfg.output_dir, self.session_id)
-            os.makedirs(self.session_dir, exist_ok=True)
+        self._fps_filter = EMAFilter(alpha=0.1)
+        self._last_frame_time: float | None = None
+        self._last_frame_shape: tuple[int, int] | None = None
+
+    # -- Sessao ---------------------------------------------------------
+    def _start_session(self, t: float) -> None:
+        self.session_id = make_session_id()
+        self.session_dir = os.path.join(self.cfg.output_dir, self.session_id)
+        os.makedirs(self.session_dir, exist_ok=True)
+
+        self.recorder.clear()
+        self.cycles.reset_session()  # preserva calibracao; zera ciclos/estado
+        self._session_frame_idx = 0
+        self._session_start_t = t
+        self._session_start_wall = datetime.now()
+        self._session_end_wall = None
+        self._session_duration_s = None
+
+        self.video_enabled = self.video_enabled_next
+        self.video_writer = None
+        self.video_recording = False
+        if self.video_enabled:
+            h, w = self._last_frame_shape or (self.cfg.frame_height, self.cfg.frame_width)
+            video_path = os.path.join(self.session_dir, "video.mp4")
+            try:
+                # FPS de CODIFICACAO (nao o fps real de processamento do
+                # pipeline -- cap.get(CAP_PROP_FPS) so descreve a captura da
+                # webcam, nunca a velocidade de inferencia; ver write_paced).
+                self.video_writer = VideoRecorder(
+                    video_path, self.cfg.video_output_fps, (w, h)
+                )
+                self.video_recording = True
+            except RuntimeError as exc:
+                self.last_status = f"Falha ao iniciar video: {exc}; sessao segue sem video."
+
+        self.recording = True
+        self.last_status = (
+            "Sessao iniciada (dados + video)." if self.video_recording
+            else "Sessao iniciada (somente dados)."
+        )
+
+    def _stop_session(self, t: float, frame=None) -> None:
+        self.recording = False
+        self._session_end_wall = datetime.now()
+        self._session_duration_s = (
+            t - self._session_start_t if self._session_start_t is not None else 0.0
+        )
+
+        if self.video_writer is not None:
+            if frame is not None:
+                # Preenche ate o ultimo indice correspondente ao fim real da
+                # sessao (o ultimo frame recebido "vale" ate esse instante).
+                target = int(self._session_duration_s * self.video_writer.fps)
+                self.video_writer.write_paced(frame, target)
+            self._video_frame_count = self.video_writer.frame_count
+            self._video_fps = self.video_writer.fps
+            self._video_duration_s = self.video_writer.duration_s
+            self.video_writer.close()
+            self.video_writer = None
+        else:
+            self._video_frame_count = 0
+            self._video_fps = 0.0
+            self._video_duration_s = 0.0
+        self.video_recording = False
+
+        self.last_status = "Sessao encerrada. Tecle E para exportar."
+
+    def _clear_session(self, t: float, frame=None) -> None:
+        """Zera a sessao atual (amostras, video, contadores), preservando a calibracao."""
+        if self.recording:
+            self._stop_session(t, frame)
+        self.recorder.clear()
+        self.cycles.reset_session()
+        self._session_frame_idx = 0
+        self._session_start_t = None
+        self._session_start_wall = None
+        self._session_end_wall = None
+        self._session_duration_s = None
+        self.session_id = None
+        self.session_dir = None
+        self._video_frame_count = 0
+        self._video_fps = 0.0
+        self._video_duration_s = 0.0
+        self.last_status = "Sessao zerada (calibracao preservada)."
+
+    def _clear_calibration(self) -> None:
+        self.cycles.clear_calibration()
+        self.last_status = "Calibracao removida. Tecle C para calibrar novamente."
 
     # -- Loop principal -------------------------------------------------------
     def run(self) -> None:
@@ -75,11 +182,12 @@ class MandibularApp:
             raise RuntimeError(
                 f"Nao foi possivel abrir a camera (indice {self.cfg.camera_index})."
             )
-        cam_fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
 
-        win = "Reconhecimento Mandibular - Biomecanica"
+        win = "Reconhecimento Mandibular - Biomecanica (frontal)"
         cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
+        now = time.perf_counter()  # garante que 'now'/'frame' existam mesmo se o loop nao rodar
+        frame = None
         try:
             while True:
                 ok, frame = cap.read()
@@ -87,8 +195,15 @@ class MandibularApp:
                     break
                 if self.cfg.flip_horizontal:
                     frame = cv2.flip(frame, 1)
+                self._last_frame_shape = frame.shape[:2]
 
                 now = time.perf_counter()
+                if self._last_frame_time is not None:
+                    dt = now - self._last_frame_time
+                    if dt > 1e-6:
+                        self._fps_filter.update(1.0 / dt)
+                self._last_frame_time = now
+
                 t = now - self.t0
                 ts_ms = max(int(t * 1000), self._last_ts_ms + 1)
                 self._last_ts_ms = ts_ms
@@ -116,8 +231,11 @@ class MandibularApp:
                             self.cycles.calibrate(result.closed, result.opened)
                         self.last_status = result.message
 
-                if not self.calib.active and fr.frame_valid:
-                    self.cycles.update(fr.opening_filtered, t)
+                t_session = (
+                    t - self._session_start_t if self._session_start_t is not None else 0.0
+                )
+                if self.recording and not self.calib.active and fr.frame_valid:
+                    self.cycles.update(fr.opening_filtered, t_session)
 
                 feedback = (
                     []
@@ -130,14 +248,14 @@ class MandibularApp:
                 self._draw_hud(frame, fr, feedback, now)
 
                 if self.recording:
-                    self._ensure_session()
                     m = fr.metrics
+                    q = fr.quality
                     self.recorder.add(
                         Sample(
                             session_id=self.session_id,
-                            frame=self.frame_idx,
+                            frame=self._session_frame_idx,
                             timestamp=datetime.now().isoformat(timespec="milliseconds"),
-                            time_s=t,
+                            time_s=t_session,
                             face_detected=face is not None,
                             frame_valid=fr.frame_valid,
                             opening_raw=(m.opening_px if m is not None else None),
@@ -151,12 +269,21 @@ class MandibularApp:
                             direction=fr.direction,
                             cycle_state=self.cycles.state,
                             repetitions=self.cycles.repetitions,
-                            quality_warning=fr.quality.message,
+                            quality_warning=q.message,
+                            quality_reason=q.reason,
+                            face_size_ratio=q.ratio,
+                            roll_deg=q.roll_deg,
+                            yaw_deg=q.yaw_deg,
+                            pitch_deg=q.pitch_deg,
                         )
                     )
+                    self._session_frame_idx += 1
 
-                if self.video_recording and self.video_writer is not None:
-                    self.video_writer.write(frame)
+                    if self.video_recording and self.video_writer is not None:
+                        # Pacing pelo tempo real da sessao (nao 1 frame de
+                        # video por frame processado): ver VideoRecorder.write_paced.
+                        target_frame_index = int(t_session * self.video_writer.fps)
+                        self.video_writer.write_paced(frame, target_frame_index)
 
                 self.frame_idx += 1
                 cv2.imshow(win, frame)
@@ -167,20 +294,32 @@ class MandibularApp:
                 elif key == ord("c"):
                     self.calib.start()
                     self.last_status = "Iniciando calibracao..."
+                elif key == ord("x"):
+                    self._clear_calibration()
                 elif key == ord("r"):
-                    self.recording = not self.recording
-                    if self.recording:
-                        self._ensure_session()
-                    self.last_status = (
-                        "Gravacao iniciada." if self.recording else "Gravacao pausada."
-                    )
+                    if not self.recording:
+                        self._start_session(t)
+                    else:
+                        self._stop_session(t, frame)
                 elif key == ord("v"):
-                    self._toggle_video(frame, cam_fps)
+                    self.video_enabled_next = not self.video_enabled_next
+                    self.last_status = (
+                        "Video HABILITADO para a proxima sessao."
+                        if self.video_enabled_next
+                        else "Video DESABILITADO para a proxima sessao."
+                    )
                 elif key == ord("e"):
                     self._export()
                 elif key == ord("z"):
-                    self._reset()
+                    self._clear_session(t, frame)
         finally:
+            # Finalizacao segura: nao perder silenciosamente uma sessao ativa.
+            if self.recording:
+                self._stop_session(now - self.t0, frame)
+            if not self.recorder.is_empty:
+                print("[aviso] finalizando e exportando a sessao ativa antes de sair.")
+                self._export()
+
             cap.release()
             cv2.destroyAllWindows()
             self.detector.close()
@@ -215,10 +354,18 @@ class MandibularApp:
                     "Frame invalido - exibindo ultimo valor valido (NAO e nova medicao)",
                     C_ALERTA,
                 ))
-            # Depuracao: razao de tamanho facial atual, limite minimo e motivo exato.
+            pose_bits = [f"Roll {quality.roll_deg:+.0f}"] if quality.roll_deg is not None else []
+            if quality.yaw_deg is not None:
+                pose_bits.append(f"Yaw {quality.yaw_deg:+.0f}")
+            if quality.pitch_deg is not None:
+                pose_bits.append(f"Pitch {quality.pitch_deg:+.0f}")
+            if pose_bits:
+                lines.append((" | ".join(pose_bits) + " (graus, estimado)", C_TEXTO))
             if quality.ratio is not None:
+                fps = self._fps_filter.value or 0.0
                 lines.append((
-                    f"Razao facial: {quality.ratio:.3f}  (min {quality.min_ratio:.2f} / max {quality.max_ratio:.2f})",
+                    f"Razao facial: {quality.ratio:.3f}  (min {quality.min_ratio:.2f} / max {quality.max_ratio:.2f})"
+                    f"  FPS: {fps:.0f}",
                     C_TEXTO,
                 ))
             if quality.message:
@@ -226,7 +373,7 @@ class MandibularApp:
 
         lines.append((f"Estado: {state.value.upper()}", state_color))
         if self.cycles.is_calibrated:
-            lines.append((f"Repeticoes: {self.cycles.repetitions}", C_TEXTO))
+            lines.append((f"Repeticoes (sessao): {self.cycles.repetitions}", C_TEXTO))
         else:
             lines.append((
                 f"Repeticoes (NAO calibrado, faixa dinamica): {self.cycles.repetitions}",
@@ -237,6 +384,12 @@ class MandibularApp:
             C_OK if self.cycles.is_calibrated else C_ALERTA,
         ))
 
+        lines.append((
+            f"Sessao: {'GRAVANDO' if self.recording else 'parada'}"
+            f"  |  Video proxima sessao: {'ON' if self.video_enabled_next else 'OFF'}",
+            C_REC if self.recording else C_TEXTO,
+        ))
+
         for msg in feedback:
             lines.append((msg, C_ALERTA))
 
@@ -245,7 +398,7 @@ class MandibularApp:
         rec_bits.append("REC video" if self.video_recording else None)
         rec_txt = " | ".join(b for b in rec_bits if b)
         lines.append((
-            rec_txt if rec_txt else "[C]alibrar [R]ec [V]ideo [E]xport [Z]erar [Q]sair",
+            rec_txt if rec_txt else "[C]alibrar [X]limpa-calib [V]ideo [R]ec [E]xport [Z]erar [Q]sair",
             C_REC if rec_txt else C_TEXTO,
         ))
 
@@ -257,37 +410,31 @@ class MandibularApp:
         draw_panel(frame, lines)
 
     # -- Acoes ------------------------------------------------------------
-    def _toggle_video(self, frame, cam_fps: float) -> None:
-        if self.video_recording:
-            if self.video_writer is not None:
-                self.video_writer.close()
-                self.video_writer = None
-            self.video_recording = False
-            self.last_status = "Gravacao de video pausada."
-            return
-
-        self._ensure_session()
-        h, w = frame.shape[:2]
-        video_path = os.path.join(self.session_dir, "video.mp4")
-        try:
-            self.video_writer = VideoRecorder(video_path, cam_fps, (w, h))
-            self.video_recording = True
-            self.last_status = "Gravacao de video iniciada."
-        except RuntimeError as exc:
-            self.last_status = f"Falha ao iniciar video: {exc}"
-
     def _export(self) -> None:
+        if self.recording:
+            self.last_status = "Pare a sessao (tecle R) antes de exportar."
+            return
         if self.recorder.is_empty:
             self.last_status = "Nada gravado para exportar (tecle R primeiro)."
             return
-        self._ensure_session()
+        self._ensure_session_dir()
 
         video_path = None
-        if self.video_writer is not None:
-            self.video_writer.close()
-            self.video_writer = None
-            self.video_recording = False
-            video_path = os.path.join(self.session_dir, "video.mp4")
+        if self._video_frame_count > 0:
+            candidate = os.path.join(self.session_dir, "video.mp4")
+            if os.path.exists(candidate):
+                video_path = candidate
+
+        processed_samples = self._session_frame_idx
+        session_duration_s = self._session_duration_s or 0.0
+        processing_fps_medio = (
+            processed_samples / session_duration_s if session_duration_s > 1e-6 else 0.0
+        )
+        # video_duration_s = video_frames_written / video_output_fps (nao
+        # cap.get(CAP_PROP_FPS): esse so descreve a captura da webcam, nunca a
+        # velocidade real de inferencia do pipeline).
+        video_duration_s = self._video_duration_s
+        video_session_duration_difference_s = abs(video_duration_s - session_duration_s)
 
         try:
             paths = export_session(
@@ -301,6 +448,25 @@ class MandibularApp:
                     "camera_index": self.cfg.camera_index,
                     "resolucao": [self.cfg.frame_width, self.cfg.frame_height],
                     "espelhado": self.cfg.flip_horizontal,
+                    "inicio_sessao": (
+                        self._session_start_wall.isoformat(timespec="seconds")
+                        if self._session_start_wall else None
+                    ),
+                    "fim_sessao": (
+                        self._session_end_wall.isoformat(timespec="seconds")
+                        if self._session_end_wall else None
+                    ),
+                    "repeticoes_sessao": self.cycles.repetitions,
+                    "video_habilitado": self.video_enabled,
+                    "processed_samples": processed_samples,
+                    "processing_fps_medio": round(processing_fps_medio, 3),
+                    "video_output_fps": self._video_fps or self.cfg.video_output_fps,
+                    "video_frames_written": self._video_frame_count,
+                    "video_duration_s": round(video_duration_s, 4),
+                    "session_duration_s": round(session_duration_s, 4),
+                    "video_session_duration_difference_s": round(
+                        video_session_duration_difference_s, 4
+                    ),
                 },
             )
         except ValueError as exc:
@@ -321,22 +487,17 @@ class MandibularApp:
             print(f"[export] {k}: {v}")
         if rep:
             print(f"[export] repetibilidade: {rep}")
+        if video_path is not None:
+            print(
+                f"[export] processamento~{processing_fps_medio:.1f}fps "
+                f"({processed_samples} amostras / {session_duration_s:.2f}s)  |  "
+                f"video={video_duration_s:.2f}s @ {self._video_fps:.0f}fps "
+                f"(diff={video_session_duration_difference_s:.3f}s)"
+            )
 
-    def _reset(self) -> None:
-        self.recorder.clear()
-        self.cycles = CycleDetector(self.cfg.cycle)
-        self.filt_opening.reset()
-        self.filt_lateral.reset()
-        self.filt_face_width.reset()
-        self.frame_idx = 0
-        self.t0 = time.perf_counter()
-        self._last_ts_ms = -1
-        self._prev_nasion = None
-        self.recording = False
-        if self.video_writer is not None:
-            self.video_writer.close()
-            self.video_writer = None
-        self.video_recording = False
-        self.session_id = None
-        self.session_dir = None
-        self.last_status = "Sessao zerada."
+    def _ensure_session_dir(self) -> None:
+        if self.session_id is None:
+            self.session_id = make_session_id()
+        if self.session_dir is None:
+            self.session_dir = os.path.join(self.cfg.output_dir, self.session_id)
+        os.makedirs(self.session_dir, exist_ok=True)

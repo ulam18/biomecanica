@@ -34,6 +34,12 @@ def parse_args() -> AppConfig:
         "converter as medidas em milimetros (opcional).",
     )
     p.add_argument("--output", default="resultados", help="pasta de saida")
+    p.add_argument(
+        "--video-fps", type=float, default=30.0,
+        help="fps de codificacao do video anotado (o video e escrito por "
+        "pacing pelo tempo real da sessao; nao depende da velocidade do "
+        "pipeline). Padrao: 30.",
+    )
     a = p.parse_args()
 
     cfg = AppConfig()
@@ -43,6 +49,7 @@ def parse_args() -> AppConfig:
     cfg.flip_horizontal = not a.no_flip
     cfg.reference_distance_mm = a.ref_mm
     cfg.output_dir = a.output
+    cfg.video_output_fps = a.video_fps
     return cfg
 
 

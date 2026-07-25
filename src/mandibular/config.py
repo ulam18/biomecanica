@@ -129,6 +129,16 @@ class QualityConfig:
     # movimentos ja tendem a levar os landmarks para fora da imagem.
     max_roll_deg: float = 30.0
     # inclinacao maxima da cabeca no plano da imagem (roll), em graus.
+    max_yaw_deg: float = 35.0
+    # rotacao horizontal maxima da cabeca (yaw; "rosto virado"), em graus
+    # estimados por proxy de profundidade (sem estereo, ver metrics.HeadPose).
+    # Permissivo de proposito: o desvio lateral mandibular por si so ja causa
+    # uma leve rotacao aparente da face; um limiar apertado demais invalidaria
+    # frames normais do proprio movimento sendo medido.
+    max_pitch_deg: float = 25.0
+    # inclinacao maxima da cabeca para cima/baixo (pitch), em graus estimados
+    # por proxy de profundidade. A abertura bucal move o queixo e pode alterar
+    # levemente o proxy; por isso tambem permissivo.
     max_global_jump_fraction: float = 0.25
     # deslocamento do nasion entre frames consecutivos, como fracao da
     # largura facial atual; acima disso considera-se movimento brusco.
@@ -158,6 +168,14 @@ class AppConfig:
     flip_horizontal: bool = True   # espelha a imagem (mais intuitivo p/ o usuario)
     draw_full_mesh: bool = False   # desenhar toda a malha (mais pesado)
     output_dir: str = "resultados"
+
+    video_output_fps: float = 30.0
+    # FPS de CODIFICACAO do video anotado (nao o FPS de processamento do
+    # pipeline, que costuma ser MENOR). O video e escrito por "pacing": a
+    # cada frame processado, escreve-se (repetindo se preciso) ate o indice
+    # de frame correspondente ao tempo real decorrido da sessao, nesta taxa.
+    # Isso mantem a duracao do MP4 igual a duracao real da sessao mesmo que
+    # o pipeline nao consiga processar 30 fps (ver VideoRecorder.write_paced).
 
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)

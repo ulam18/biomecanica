@@ -78,17 +78,26 @@ didução 9–12 mm).
 | Tecla | Ação |
 |---|---|
 | `C` | Calibrar (assistente: boca fechada → boca aberta) |
-| `R` | Iniciar / pausar a gravação da sessão |
-| `E` | Exportar CSV + gráfico da sessão |
-| `Z` | Zerar a sessão (amostras e contagem) |
-| `Q` / `ESC` | Sair |
+| `X` | Apagar a calibração atual |
+| `V` | Habilitar / desabilitar a gravação de vídeo para a **próxima** sessão |
+| `R` | Iniciar / encerrar uma sessão (dados **e** vídeo, sincronizados) |
+| `E` | Exportar a sessão encerrada (CSV + resumo + metadados + gráficos + vídeo) |
+| `Z` | Zerar a sessão atual (amostras, vídeo e contagem) — **preserva a calibração** |
+| `Q` / `ESC` | Sair (finaliza com segurança uma sessão ainda ativa) |
+
+`V` só define se a **próxima** sessão iniciada com `R` vai gravar vídeo; não
+afeta uma sessão já em andamento. `R` inicia/encerra os dados e o vídeo no
+mesmo instante, para que `dados.csv` e `video.mp4` cubram exatamente o mesmo
+intervalo.
 
 ### Fluxo recomendado
 
 1. Posicione o rosto bem iluminado e centralizado, cabeça estável.
 2. Tecle **`C`** e siga o assistente de calibração (fechado → aberto).
-3. Tecle **`R`** para gravar e realize os movimentos de abertura/fechamento.
-4. Tecle **`E`** para exportar o CSV e o gráfico na pasta `resultados/`.
+3. (Opcional) Tecle **`V`** para habilitar a gravação de vídeo da sessão.
+4. Tecle **`R`** para iniciar a sessão e realize os movimentos de abertura/fechamento.
+5. Tecle **`R`** novamente para encerrar a sessão.
+6. Tecle **`E`** para exportar a pasta da sessão em `resultados/`.
 
 ---
 

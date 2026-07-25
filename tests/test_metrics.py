@@ -176,6 +176,36 @@ def test_min_cycle_seconds_filters_fast_flicker():
     assert det.repetitions == 0, det.repetitions
 
 
+def test_cycle_detector_reset_session_preserves_calibration():
+    """
+    reset_session() (usado ao iniciar/zerar uma sessao - teclas R/Z) deve
+    limpar ciclos e estado, mas preservar a calibracao (baseline/span):
+    repetir a sessao nao pode exigir recalibrar.
+    """
+    det = CycleDetector(CycleConfig(min_cycle_seconds=0.05))
+    det.calibrate(0.0, 0.5)
+    _run_signal(det, [0.0, 0.5, 0.0])
+    assert det.repetitions == 1
+
+    det.reset_session()
+
+    assert det.repetitions == 0
+    assert det.is_calibrated
+    assert det.baseline == 0.0
+    assert det.span == 0.5
+    assert det.state == MovementState.FECHADO
+
+
+def test_cycle_detector_clear_calibration():
+    det = CycleDetector()
+    det.calibrate(0.0, 0.5)
+    assert det.is_calibrated
+    det.clear_calibration()
+    assert not det.is_calibrated
+    assert det.baseline is None
+    assert det.span is None
+
+
 def test_state_machine_transitions():
     det = CycleDetector(CycleConfig(min_cycle_seconds=0.0))
     det.calibrate(0.0, 1.0)

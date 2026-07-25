@@ -78,6 +78,78 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return v / n
 
 
+@dataclass
+class HeadPose:
+    """
+    Estimativa da orientacao da cabeca (roll/yaw/pitch), em graus.
+
+    - `roll_deg`: inclinacao no plano da imagem (eixo inter-ocular vs
+      horizontal). Calculo 2D direto, exato, sempre disponivel.
+    - `yaw_deg`/`pitch_deg`: proxies a partir da profundidade relativa (z) por
+      landmark que o MediaPipe Face Landmarker fornece (uma unica camera, sem
+      estereo). Servem apenas para o controle de qualidade (gate de "virado/
+      inclinado demais"), NAO sao medidas clinicas de angulo. `None` quando o
+      frame nao tem profundidade disponivel (ex.: landmarks sinteticos de
+      teste) -- nesse caso yaw/pitch nao entram no controle de qualidade.
+    - `yaw_proxy`/`pitch_proxy`: valores adimensionais antes da conversao
+      para graus (uteis para depuracao/testes); tambem `None` se indisponivel.
+    """
+    roll_deg: float
+    yaw_deg: float | None
+    pitch_deg: float | None
+    yaw_proxy: float | None
+    pitch_proxy: float | None
+
+
+def estimate_head_pose(face: FaceLandmarks) -> HeadPose:
+    """
+    Estima roll/yaw/pitch da cabeca a partir dos landmarks de um unico frame.
+
+    Sem uma segunda camera (visao frontal apenas), yaw e pitch nao podem ser
+    medidos com precisao geometrica; usa-se a profundidade relativa (z) que o
+    proprio MediaPipe fornece por landmark como aproximacao (mesma fonte ja
+    usada por `compute_symmetry` para o yaw). Quando o frame nao tem
+    profundidade (`face.has_depth` False), yaw/pitch ficam `None` -- nao ha
+    base confiavel para estima-los so em 2D a partir de um unico ponto (ex.:
+    a ponta do nariz pode estar ausente/nao mapeada em landmarks sinteticos).
+    """
+    face_width, _x_face, _y_face = _face_frame(face)
+    eye_l = face.point(Landmark.EYE_OUTER_LEFT)
+    eye_r = face.point(Landmark.EYE_OUTER_RIGHT)
+    dx, dy = eye_r - eye_l
+    roll_deg = float(np.degrees(np.arctan2(dy, dx)))
+
+    if not face.has_depth:
+        return HeadPose(
+            roll_deg=roll_deg, yaw_deg=None, pitch_deg=None,
+            yaw_proxy=None, pitch_proxy=None,
+        )
+
+    nasion = face.point(Landmark.NASION)
+    chin = face.point(Landmark.CHIN)
+    face_height = float(np.linalg.norm(chin - nasion))
+    if face_height < 1e-6:
+        face_height = 1e-6
+
+    yaw_proxy = (
+        face.z(Landmark.EYE_OUTER_LEFT) - face.z(Landmark.EYE_OUTER_RIGHT)
+    ) / face_width
+    pitch_proxy = (
+        face.z(Landmark.FOREHEAD) - face.z(Landmark.CHIN)
+    ) / face_height
+
+    yaw_deg = float(np.degrees(np.arcsin(np.clip(yaw_proxy, -1.0, 1.0))))
+    pitch_deg = float(np.degrees(np.arcsin(np.clip(pitch_proxy, -1.0, 1.0))))
+
+    return HeadPose(
+        roll_deg=roll_deg,
+        yaw_deg=yaw_deg,
+        pitch_deg=pitch_deg,
+        yaw_proxy=float(yaw_proxy),
+        pitch_proxy=float(pitch_proxy),
+    )
+
+
 def compute_frame_metrics(
     face: FaceLandmarks,
     reference_distance_mm: float | None = None,
@@ -172,6 +244,25 @@ class CycleDetector:
         """Define a faixa com base em amostras de boca fechada e aberta."""
         self._baseline = closed_value
         self._span = max(open_value - closed_value, 1e-6)
+
+    def clear_calibration(self) -> None:
+        """Remove a calibracao atual (repeticoes voltam a usar a faixa dinamica)."""
+        self._baseline = None
+        self._span = None
+
+    def reset_session(self) -> None:
+        """
+        Reinicia o estado, os ciclos e a faixa dinamica para uma NOVA sessao,
+        preservando a calibracao (baseline/span) ja existente. Usado ao
+        iniciar uma gravacao (R) e ao zerar a sessao atual (Z), para que
+        repeticoes nunca sejam herdadas de fora do intervalo gravado.
+        """
+        self.state = MovementState.FECHADO
+        self.cycles = []
+        self._dyn_min = float("inf")
+        self._dyn_max = float("-inf")
+        self._cycle_start_t = None
+        self._cycle_peak = 0.0
 
     @property
     def is_calibrated(self) -> bool:

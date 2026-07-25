@@ -21,6 +21,11 @@ CSV_COLUMNS = [
     "tempo_s",
     "face_detectada",
     "frame_valido",
+    "motivo_qualidade",
+    "razao_facial",
+    "roll_deg",
+    "yaw_deg",
+    "pitch_deg",
     "abertura_bruta",
     "abertura_relativa",
     "abertura_filtrada",
@@ -67,6 +72,11 @@ class Sample:
     cycle_state: MovementState
     repetitions: int
     quality_warning: str | None
+    quality_reason: str | None = None  # motivo curto/estavel (ver quality.QualityResult.reason)
+    face_size_ratio: float | None = None  # face_width_px / frame_width_px
+    roll_deg: float | None = None
+    yaw_deg: float | None = None
+    pitch_deg: float | None = None
 
     def to_row(self) -> list:
         def fmt(v: float | None, decimals: int) -> str:
@@ -79,6 +89,11 @@ class Sample:
             f"{self.time_s:.4f}",
             int(self.face_detected),
             int(self.frame_valid),
+            self.quality_reason or "",
+            fmt(self.face_size_ratio, 4),
+            fmt(self.roll_deg, 2),
+            fmt(self.yaw_deg, 2),
+            fmt(self.pitch_deg, 2),
             fmt(self.opening_raw, 4),
             fmt(self.opening_rel, 6),
             fmt(self.opening_filtered, 6),

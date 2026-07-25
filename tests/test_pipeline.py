@@ -122,6 +122,55 @@ def test_quality_excessive_roll():
     result = assess_quality(face, None, QualityConfig())
     assert result.quality == FrameQuality.INVALIDA
     assert "estavel" in result.message
+    assert abs(result.roll_deg - 45.0) < 1.0
+
+
+# --------------------------------------------------------------------------
+# Yaw / pitch (proxy de profundidade) -- so avaliados quando ha depth (z);
+# sem profundidade (landmarks sinteticos "puros" 2D), assess_quality nao
+# pode inventar um yaw/pitch confiavel e nao deve invalidar o frame por isso.
+# --------------------------------------------------------------------------
+def test_quality_yaw_pitch_none_without_depth():
+    face = make_face(opening_px=50.0)  # sem depth (padrao dos testes 2D)
+    result = assess_quality(face, None, QualityConfig())
+    assert result.quality == FrameQuality.VALIDA
+    assert result.yaw_deg is None
+    assert result.pitch_deg is None
+    assert result.roll_deg is not None  # roll e sempre calculavel (2D puro)
+
+
+def test_quality_excessive_yaw():
+    face = make_face(opening_px=50.0)
+    depth = np.zeros(N_LANDMARKS, dtype=np.float32)
+    depth[Landmark.EYE_OUTER_LEFT] = 150.0  # olho esquerdo bem mais perto -> rosto virado
+    face.depth = depth
+    result = assess_quality(face, None, QualityConfig())
+    assert result.quality == FrameQuality.INVALIDA
+    assert result.reason == "yaw_excessivo"
+    assert result.yaw_deg is not None and abs(result.yaw_deg) > QualityConfig().max_yaw_deg
+
+
+def test_quality_excessive_pitch():
+    face = make_face(opening_px=50.0)
+    depth = np.zeros(N_LANDMARKS, dtype=np.float32)
+    depth[Landmark.FOREHEAD] = 150.0  # testa mais longe da camera que o queixo -> cabeca p/ baixo
+    face.depth = depth
+    result = assess_quality(face, None, QualityConfig())
+    assert result.quality == FrameQuality.INVALIDA
+    assert result.reason == "pitch_excessivo"
+    assert result.pitch_deg is not None and abs(result.pitch_deg) > QualityConfig().max_pitch_deg
+
+
+def test_quality_moderate_yaw_pitch_stays_valid():
+    """Yaw/pitch pequenos (dentro do limiar permissivo) nao invalidam o frame."""
+    face = make_face(opening_px=50.0)
+    depth = np.zeros(N_LANDMARKS, dtype=np.float32)
+    depth[Landmark.EYE_OUTER_LEFT] = 20.0
+    depth[Landmark.FOREHEAD] = 15.0
+    face.depth = depth
+    result = assess_quality(face, None, QualityConfig())
+    assert result.quality == FrameQuality.VALIDA
+    assert result.yaw_deg is not None and result.pitch_deg is not None
 
 
 def test_quality_global_jump_between_frames():
