@@ -22,6 +22,7 @@ C_PAINEL = (30, 30, 30)
 C_REC = (0, 0, 255)
 C_OK = (0, 220, 0)
 C_ALERTA = (0, 180, 255)
+C_HEADER = (0, 200, 200)  # titulo de secao do HUD (ex.: "ABERTURA", "LATERALIDADE")
 
 
 def draw_landmarks(frame: np.ndarray, face) -> None:
@@ -41,18 +42,27 @@ def draw_landmarks(frame: np.ndarray, face) -> None:
 
 
 def draw_panel(frame: np.ndarray, lines: list[tuple[str, tuple]]) -> None:
-    """Desenha um painel semi-transparente com uma linha de texto por item."""
+    """
+    Desenha um painel semi-transparente com uma linha de texto por item
+    (uma informacao por linha -- nunca concatenar varios valores numa
+    linha longa, para o texto nao ficar cortado). Linhas vazias ("") viram
+    um pequeno espaco em branco, usadas para separar secoes do HUD.
+    """
     pad = 12
-    line_h = 26
-    w = 380
-    h = pad * 2 + line_h * len(lines)
+    line_h = 24
+    blank_h = 10
+    w = 460  # largo o suficiente para as linhas mais compridas (ex.: qualidade) nao cortarem
+    h = pad * 2 + sum(blank_h if text == "" else line_h for text, _ in lines)
     overlay = frame.copy()
     cv2.rectangle(overlay, (10, 10), (10 + w, 10 + h), C_PAINEL, -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
-    y = 10 + pad + 18
+    y = 10 + pad + 16
     for text, color in lines:
+        if text == "":
+            y += blank_h
+            continue
         cv2.putText(frame, text, (10 + pad, y), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, color, 1, cv2.LINE_AA)
+                    0.55, color, 1, cv2.LINE_AA)
         y += line_h
 
 

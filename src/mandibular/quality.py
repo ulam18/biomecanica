@@ -57,6 +57,12 @@ def assess_quality(
             reason="sem_face", ratio=None, min_ratio=min_r, max_ratio=max_r,
         )
 
+    if config.reject_multiple_faces and face.num_faces > 1:
+        return QualityResult(
+            FrameQuality.INVALIDA, "Mantenha apenas uma pessoa no enquadramento",
+            reason="multiplas_faces", ratio=None, min_ratio=min_r, max_ratio=max_r,
+        )
+
     h, w = face.image_height, face.image_width
     eye_l = face.point(Landmark.EYE_OUTER_LEFT)
     eye_r = face.point(Landmark.EYE_OUTER_RIGHT)

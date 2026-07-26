@@ -4,6 +4,14 @@ Gravacao das medidas por frame e exportacao para CSV.
 Cada linha registrada corresponde a um frame processado (com face valida ou
 nao), permitindo reconstruir a trajetoria temporal do movimento mandibular,
 auditar a qualidade da coleta e comparar sessoes.
+
+Unidades: colunas "*_relativo"/"*_filtrado"/"*_bruto" (abertura e lateral,
+absoluta e dinamica) sao adimensionais, normalizadas pela distancia
+INTEROCULAR (cantos externos dos olhos) -- ver metrics.REL_UNIT_DESCRIPTION.
+Colunas "*_mm" so existem com calibracao de escala (--ref-mm). Convencao de
+sinal da lateralidade: positivo/negativo mapeiam para direita/esquerda
+anatomica de acordo com `mirrored` (ver coluna `anatomical_direction`, ja
+calculada com a correcao; NAO deduza o lado so pelo sinal bruto).
 """
 
 from __future__ import annotations
@@ -35,6 +43,17 @@ CSV_COLUMNS = [
     "desvio_lateral_filtrado",
     "desvio_lateral_mm",
     "direcao",
+    # -- Lateralidade absoluta vs dinamica (secao 2 do refinamento frontal).
+    # "absolute_raw/filtered" sao ALIAS de desvio_lateral_relativo/filtrado
+    # (mesma unidade relativa; nomes em ingles pedidos explicitamente).
+    # "dynamic_*" = absolute - lateral_neutral_baseline (~0 na posicao neutra).
+    "lateral_neutral_baseline",
+    "lateral_absolute_raw",
+    "lateral_absolute_filtered",
+    "lateral_dynamic_raw",
+    "lateral_dynamic_filtered",
+    "anatomical_direction",  # alias de "direcao"
+    "cycle_id",  # ciclo COMPLETO ao qual este frame pertence (vazio se nenhum)
     "estado_ciclo",
     "repeticoes",
     "aviso_qualidade",
@@ -77,6 +96,10 @@ class Sample:
     roll_deg: float | None = None
     yaw_deg: float | None = None
     pitch_deg: float | None = None
+    lateral_neutral_baseline: float | None = None  # baseline usado neste frame (None se nao calibrado)
+    lateral_dynamic_raw: float | None = None
+    lateral_dynamic_filtered: float | None = None
+    cycle_id: int | None = None  # preenchido por assign_cycle_ids() na exportacao
 
     def to_row(self) -> list:
         def fmt(v: float | None, decimals: int) -> str:
@@ -103,10 +126,37 @@ class Sample:
             fmt(self.lateral_filtered, 6),
             fmt(self.lateral_mm, 3),
             self.direction,
+            fmt(self.lateral_neutral_baseline, 6),
+            fmt(self.lateral_rel, 6),          # lateral_absolute_raw (alias)
+            fmt(self.lateral_filtered, 6),     # lateral_absolute_filtered (alias)
+            fmt(self.lateral_dynamic_raw, 6),
+            fmt(self.lateral_dynamic_filtered, 6),
+            self.direction,                    # anatomical_direction (alias)
+            "" if self.cycle_id is None else self.cycle_id,
             self.cycle_state.value,
             self.repetitions,
             self.quality_warning or "",
         ]
+
+
+def assign_cycle_ids(samples: list[Sample], cycles: list) -> None:
+    """
+    Marca em cada amostra (`sample.cycle_id`) a QUAL ciclo COMPLETO ela
+    pertence, casando `time_s` com o intervalo [start_time, end_time] de cada
+    `metrics.Cycle`. Amostras fora de qualquer ciclo completo (fora de
+    sessao, ciclo incompleto/em andamento) ficam com cycle_id=None.
+
+    Feito como pos-processamento (na exportacao) em vez de em tempo real:
+    um ciclo so e conhecido DEPOIS de completo, entao nao ha como rotular a
+    amostra no momento em que ela e gravada.
+    """
+    if not cycles:
+        return
+    for s in samples:
+        for c in cycles:
+            if c.start_time <= s.time_s <= c.end_time:
+                s.cycle_id = c.cycle_id
+                break
 
 
 @dataclass

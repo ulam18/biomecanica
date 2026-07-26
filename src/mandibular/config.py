@@ -77,7 +77,15 @@ SYMMETRIC_PAIRS = [
 @dataclass
 class DetectionConfig:
     """Parametros do detector de face (MediaPipe Face Landmarker / Tasks API)."""
-    max_num_faces: int = 1
+    max_num_faces: int = 2
+    # 2 (nao 1): permite ao MediaPipe reportar quando ha MAIS DE UMA face no
+    # quadro, para o controle de qualidade rejeitar o frame nesse caso (ver
+    # QualityConfig.reject_multiple_faces). So o landmark[0] (a face de maior
+    # confianca) e usado para as metricas, igual a antes -- pedir ate 2 faces
+    # nao muda qual face e escolhida como principal numa cena com uma so
+    # pessoa. Se isso causar instabilidade de rastreamento em algum ambiente,
+    # reduza para 1 (desliga a deteccao de multiplas faces) ou desative via
+    # QualityConfig.reject_multiple_faces=False sem tocar aqui.
     min_detection_confidence: float = 0.5
     min_presence_confidence: float = 0.5
     min_tracking_confidence: float = 0.5
@@ -141,7 +149,13 @@ class QualityConfig:
     # levemente o proxy; por isso tambem permissivo.
     max_global_jump_fraction: float = 0.25
     # deslocamento do nasion entre frames consecutivos, como fracao da
-    # largura facial atual; acima disso considera-se movimento brusco.
+    # distancia interocular atual (cantos externos dos olhos, o denominador
+    # usado em todas as metricas relativas); acima disso considera-se
+    # movimento brusco.
+    reject_multiple_faces: bool = True
+    # invalida o frame quando o detector reporta mais de uma face (ver
+    # DetectionConfig.max_num_faces). Isolado/configuravel: desligue aqui se
+    # precisar manter max_num_faces=2 sem a rejeicao (ex.: depuracao).
 
 
 @dataclass
@@ -157,6 +171,47 @@ class CycleConfig:
     open_fraction: float = 0.60    # fracao da faixa para considerar "aberto"
     close_fraction: float = 0.25   # fracao da faixa para considerar "fechado"
     min_cycle_seconds: float = 0.25  # ignora oscilacoes mais rapidas que isso (ruido)
+
+    # -- Limites EXPORTADOS do ciclo (distintos dos limiares de histerese
+    # acima, que continuam controlando so a maquina de estados/robustez a
+    # ruido) -----------------------------------------------------------
+    boundary_closed_fraction: float = 0.05
+    # banda de "boca REALMENTE fechada" (closed_baseline_limit = baseline +
+    # boundary_closed_fraction*span), usada para validar o inicio/fim
+    # exportados de cada ciclo. Bem mais estreita que close_fraction (25%):
+    # aquele so evita oscilacao da maquina de estados por ruido; este define
+    # o que conta como "voltou ao fechado de verdade" para fins de relatorio.
+    close_stability_seconds: float = 0.15
+    # duracao MINIMA (segundos, nao numero de frames) que o sinal precisa
+    # permanecer dentro de closed_baseline_limit, de forma continua, para
+    # confirmar o fim do ciclo. Em segundos (nao frames) para o
+    # comportamento ficar equivalente a 10, 15 ou 30 fps.
+    prebuffer_seconds: float = 0.4
+    # janela deslizante de tempo auxiliar (ver `last_stable_closed_sample` em
+    # CycleDetector para a fonte PRINCIPAL do inicio exportado); usada so
+    # como fallback quando nao ha nenhuma amostra fechada conhecida (ex.:
+    # inicio de sessao ja em movimento).
+
+    # -- Classificacao direita/esquerda/centro por ciclo -----------------
+    direction_deadzone_min: float = 0.03
+    direction_noise_multiplier: float = 3.0
+    # effective_direction_deadzone = max(direction_deadzone_min,
+    # direction_noise_multiplier * lateral_baseline_std) -- ver
+    # CycleDetector.effective_direction_deadzone. Adapta o limiar de
+    # classificacao ao ruido REAL medido na fase de boca fechada da
+    # calibracao, em vez de um valor fixo (0.02 fixo se mostrou sensivel
+    # demais a ruido de deteccao numa coleta real).
+    direction_plateau_fraction: float = 0.95
+    # amostras com abertura_filtrada >= direction_plateau_fraction*pico do
+    # ciclo formam o "plato de abertura maxima"; a MEDIANA de
+    # lateral_dynamic_filtered nesse plato (nao o valor de um unico frame no
+    # pico, sensivel a ruido) e o criterio de classificacao da direcao.
+    direction_min_plateau_samples: int = 3
+    # abaixo disso, o plato e considerado curto demais para uma mediana
+    # confiavel; cai no fallback de janela temporal ao redor do pico.
+    direction_plateau_fallback_window_s: float = 0.1
+    # meia-largura (segundos) da janela ao redor de peak_time usada quando o
+    # plato tem poucas amostras (secao 3 do refinamento de precisao).
 
 
 @dataclass

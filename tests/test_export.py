@@ -98,7 +98,7 @@ def test_plot_series_uses_nan_not_zero_for_invalid_frames():
     rec.add(_sample(1, False, None))
     rec.add(_sample(2, True, 0.40))
 
-    t, opening_filt, _lat_filt, _o_raw, _l_raw, valid_mask, _unit = _series(rec, use_mm=False)
+    t, opening_filt, _lat_filt, _o_raw, _l_raw, valid_mask = _series(rec, use_mm=False)
 
     assert opening_filt[0] == 0.30
     assert np.isnan(opening_filt[1])   # NAO e 0.0

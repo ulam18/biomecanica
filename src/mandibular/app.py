@@ -36,8 +36,17 @@ from .exporter import export_session, make_session_id
 from .feedback import biofeedback_messages
 from .filters import EMAFilter
 from .landmarks import FaceMeshDetector
-from .metrics import CycleDetector, MovementState
-from .overlay import C_ALERTA, C_OK, C_REC, C_TEXTO, draw_landmarks, draw_opening_bar, draw_panel
+from .metrics import CycleDetector, MovementState, lateral_direction
+from .overlay import (
+    C_ALERTA,
+    C_HEADER,
+    C_OK,
+    C_REC,
+    C_TEXTO,
+    draw_landmarks,
+    draw_opening_bar,
+    draw_panel,
+)
 from .pipeline import process_frame
 from .recorder import Sample, SessionRecorder
 from .video_recorder import VideoRecorder
@@ -218,6 +227,7 @@ class MandibularApp:
                     self.filt_lateral,
                     self.filt_face_width,
                     prev_nasion=self._prev_nasion,
+                    lateral_baseline=self.cycles.lateral_baseline,
                 )
                 self._prev_nasion = face.point(Landmark.NASION) if face is not None else None
 
@@ -225,17 +235,24 @@ class MandibularApp:
                     draw_landmarks(frame, face)
 
                 if self.calib.active and fr.frame_valid:
-                    result = self.calib.update(fr.opening_filtered, now)
+                    result = self.calib.update(fr.opening_filtered, now, lateral=fr.lateral_filtered)
                     if result is not None:
                         if result.valid:
-                            self.cycles.calibrate(result.closed, result.opened)
+                            self.cycles.calibrate(
+                                result.closed, result.opened,
+                                result.lateral_baseline, result.lateral_baseline_std,
+                            )
                         self.last_status = result.message
 
                 t_session = (
                     t - self._session_start_t if self._session_start_t is not None else 0.0
                 )
                 if self.recording and not self.calib.active and fr.frame_valid:
-                    self.cycles.update(fr.opening_filtered, t_session)
+                    self.cycles.update(
+                        fr.opening_filtered, t_session,
+                        lateral_absolute=fr.lateral_filtered,
+                        lateral_dynamic=fr.lateral_dynamic_filtered,
+                    )
 
                 feedback = (
                     []
@@ -275,6 +292,9 @@ class MandibularApp:
                             roll_deg=q.roll_deg,
                             yaw_deg=q.yaw_deg,
                             pitch_deg=q.pitch_deg,
+                            lateral_neutral_baseline=fr.lateral_baseline,
+                            lateral_dynamic_raw=fr.lateral_dynamic_raw,
+                            lateral_dynamic_filtered=fr.lateral_dynamic_filtered,
                         )
                     )
                     self._session_frame_idx += 1
@@ -329,7 +349,17 @@ class MandibularApp:
 
     # -- HUD ------------------------------------------------------------
     def _draw_hud(self, frame, fr, feedback: list[str], now: float) -> None:
-        m, quality, direction = fr.metrics, fr.quality, fr.direction
+        """
+        Painel organizado em secoes (ABERTURA / LATERALIDADE / QUALIDADE /
+        SESSAO / CONTROLES), uma informacao por linha -- nunca varios valores
+        concatenados numa linha so, para nao cortar texto. Nomes exibidos ao
+        usuario (secao 1 do refinamento):
+            "Lateral absoluto"  -> "Posicao do queixo em relacao a linha media"
+            "Lateral dinamico"  -> "Movimento do queixo desde a posicao neutra"
+            "Baseline lateral"  -> "Posicao neutra calibrada"
+        (nomes internos/colunas do CSV continuam os mesmos, por compatibilidade.)
+        """
+        m, quality = fr.metrics, fr.quality
         state = self.cycles.state
         state_color = {
             MovementState.FECHADO: C_TEXTO,
@@ -343,68 +373,101 @@ class MandibularApp:
         if m is None:
             lines.append(("Face nao detectada", C_ALERTA))
         else:
+            lines.append(("ABERTURA", C_HEADER))
             if m.opening_mm is not None:
                 lines.append((f"Abertura: {m.opening_rel:.3f} rel  ({m.opening_mm:.1f} mm)", C_TEXTO))
-                lines.append((f"Desvio lat.: {m.lateral_rel:+.3f} rel  ({m.lateral_mm:+.1f} mm)  [{direction}]", C_TEXTO))
             else:
-                lines.append((f"Abertura: {m.opening_rel:.3f} (rel. larg. facial)", C_TEXTO))
-                lines.append((f"Desvio lateral: {m.lateral_rel:+.3f}  [{direction}]", C_TEXTO))
+                lines.append((f"Abertura: {m.opening_rel:.3f}", C_TEXTO))
+            lines.append((f"Estado: {state.value.upper()}", state_color))
+            if self.cycles.is_calibrated:
+                lines.append((f"Repeticoes: {self.cycles.repetitions}", C_TEXTO))
+            else:
+                lines.append((f"Repeticoes (nao calibrado): {self.cycles.repetitions}", C_ALERTA))
+            lines.append(("", C_TEXTO))
+
+            lines.append(("LATERALIDADE", C_HEADER))
+            side = lateral_direction(fr.lateral_display, self.cfg.flip_horizontal)
+            lines.append((f"Posicao do queixo: {fr.lateral_display:+.3f}", C_TEXTO))
+            lines.append((f"Lado da linha media: {side}", C_TEXTO))
+            if fr.lateral_baseline is not None:
+                lines.append((f"Movimento desde o neutro: {fr.lateral_dynamic_display:+.3f}", C_TEXTO))
+                lines.append((f"Direcao do movimento: {fr.direction}", C_TEXTO))
+                lines.append((f"Posicao neutra calibrada: {fr.lateral_baseline:+.3f}", C_TEXTO))
+            else:
+                lines.append(("Posicao neutra calibrada: nao calibrada (tecle C)", C_ALERTA))
+            lines.append(("", C_TEXTO))
+
             if not fr.frame_valid:
                 lines.append((
                     "Frame invalido - exibindo ultimo valor valido (NAO e nova medicao)",
                     C_ALERTA,
                 ))
-            pose_bits = [f"Roll {quality.roll_deg:+.0f}"] if quality.roll_deg is not None else []
-            if quality.yaw_deg is not None:
-                pose_bits.append(f"Yaw {quality.yaw_deg:+.0f}")
-            if quality.pitch_deg is not None:
-                pose_bits.append(f"Pitch {quality.pitch_deg:+.0f}")
-            if pose_bits:
-                lines.append((" | ".join(pose_bits) + " (graus, estimado)", C_TEXTO))
+
+            lines.append(("QUALIDADE", C_HEADER))
+            lines.append((
+                f"Roll: {quality.roll_deg:+.0f} graus" if quality.roll_deg is not None
+                else "Roll: indisponivel",
+                C_TEXTO,
+            ))
+            lines.append((
+                f"Yaw: {quality.yaw_deg:+.0f} graus" if quality.yaw_deg is not None
+                else "Yaw: indisponivel",
+                C_TEXTO,
+            ))
+            lines.append((
+                f"Pitch: {quality.pitch_deg:+.0f} graus" if quality.pitch_deg is not None
+                else "Pitch: indisponivel",
+                C_TEXTO,
+            ))
             if quality.ratio is not None:
-                fps = self._fps_filter.value or 0.0
                 lines.append((
-                    f"Razao facial: {quality.ratio:.3f}  (min {quality.min_ratio:.2f} / max {quality.max_ratio:.2f})"
-                    f"  FPS: {fps:.0f}",
+                    f"Razao facial: {quality.ratio:.3f} (min {quality.min_ratio:.2f} / max {quality.max_ratio:.2f})",
                     C_TEXTO,
                 ))
-            if quality.message:
-                lines.append((f"{quality.message}", C_ALERTA))
-
-        lines.append((f"Estado: {state.value.upper()}", state_color))
-        if self.cycles.is_calibrated:
-            lines.append((f"Repeticoes (sessao): {self.cycles.repetitions}", C_TEXTO))
-        else:
             lines.append((
-                f"Repeticoes (NAO calibrado, faixa dinamica): {self.cycles.repetitions}",
-                C_ALERTA,
+                "Frame: valido" if fr.frame_valid else f"Frame: invalido ({quality.reason or '?'})",
+                C_OK if fr.frame_valid else C_ALERTA,
             ))
+            if quality.message:
+                lines.append((quality.message, C_ALERTA))
+            fps = self._fps_filter.value or 0.0
+            lines.append((f"FPS: {fps:.0f}", C_TEXTO))
+            lines.append(("", C_TEXTO))
+
+        lines.append(("SESSAO", C_HEADER))
         lines.append((
             "Calibrado: sim" if self.cycles.is_calibrated else "Calibrado: nao (tecle C)",
             C_OK if self.cycles.is_calibrated else C_ALERTA,
         ))
-
         lines.append((
-            f"Sessao: {'GRAVANDO' if self.recording else 'parada'}"
-            f"  |  Video proxima sessao: {'ON' if self.video_enabled_next else 'OFF'}",
+            f"Sessao: {'gravando' if self.recording else 'parada'}",
             C_REC if self.recording else C_TEXTO,
         ))
-
-        for msg in feedback:
-            lines.append((msg, C_ALERTA))
-
+        lines.append((
+            f"Video proxima sessao: {'ON' if self.video_enabled_next else 'OFF'}", C_TEXTO
+        ))
         rec_bits = []
         rec_bits.append("REC dados" if self.recording else None)
         rec_bits.append("REC video" if self.video_recording else None)
         rec_txt = " | ".join(b for b in rec_bits if b)
-        lines.append((
-            rec_txt if rec_txt else "[C]alibrar [X]limpa-calib [V]ideo [R]ec [E]xport [Z]erar [Q]sair",
-            C_REC if rec_txt else C_TEXTO,
-        ))
+        if rec_txt:
+            lines.append((rec_txt, C_REC))
+        lines.append(("", C_TEXTO))
+
+        for msg in feedback:
+            lines.append((msg, C_ALERTA))
+        if feedback:
+            lines.append(("", C_TEXTO))
+
+        lines.append(("CONTROLES", C_HEADER))
+        lines.append(("C calibrar | X apagar calibracao", C_TEXTO))
+        lines.append(("V video | R iniciar/parar", C_TEXTO))
+        lines.append(("E exportar | Z zerar | Q sair", C_TEXTO))
 
         if self.calib.active:
-            lines = [(self.calib.instruction(now), C_ALERTA)] + lines
+            lines = [(self.calib.instruction(now), C_ALERTA), ("", C_TEXTO)] + lines
         if self.last_status:
+            lines.append(("", C_TEXTO))
             lines.append((self.last_status, C_OK))
 
         draw_panel(frame, lines)
@@ -444,10 +507,20 @@ class MandibularApp:
                 self.session_id,
                 ref_mm=self.cfg.reference_distance_mm,
                 video_path=video_path,
+                mirrored=self.cfg.flip_horizontal,
                 extra_metadata={
                     "camera_index": self.cfg.camera_index,
                     "resolucao": [self.cfg.frame_width, self.cfg.frame_height],
                     "espelhado": self.cfg.flip_horizontal,
+                    "quality_thresholds": {
+                        "min_face_width_ratio": self.cfg.quality.min_face_width_ratio,
+                        "max_face_width_ratio": self.cfg.quality.max_face_width_ratio,
+                        "max_roll_deg": self.cfg.quality.max_roll_deg,
+                        "max_yaw_deg": self.cfg.quality.max_yaw_deg,
+                        "max_pitch_deg": self.cfg.quality.max_pitch_deg,
+                        "max_global_jump_fraction": self.cfg.quality.max_global_jump_fraction,
+                        "reject_multiple_faces": self.cfg.quality.reject_multiple_faces,
+                    },
                     "inicio_sessao": (
                         self._session_start_wall.isoformat(timespec="seconds")
                         if self._session_start_wall else None

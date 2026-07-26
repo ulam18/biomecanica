@@ -135,7 +135,7 @@ def test_lateral_direction_deadzone():
 # --------------------------------------------------------------------------
 # Deteccao de ciclos
 # --------------------------------------------------------------------------
-def _run_signal(det: CycleDetector, values, fps=30, hold=5):
+def _run_signal(det: CycleDetector, values, fps=30, hold=8):
     dt = 1.0 / fps
     t = 0.0
     for v in values:
@@ -207,17 +207,32 @@ def test_cycle_detector_clear_calibration():
 
 
 def test_state_machine_transitions():
+    """
+    O fechamento so e CONFIRMADO apos close_stability_seconds (=0.15s,
+    padrao) de permanencia CONTINUA dentro da banda "realmente fechada"
+    (boundary_closed_fraction=5% da faixa -- bem mais estreita que o limiar
+    de fechamento de 25% usado so pela histerese da maquina de estados).
+    Por isso sao necessarias 3 amostras espacadas de 0.1s (0.2s de intervalo
+    total) para confirmar, com valor <= 5% (0.05 aqui), nao 2 amostras a 25%.
+    """
     det = CycleDetector(CycleConfig(min_cycle_seconds=0.0))
     det.calibrate(0.0, 1.0)
     det.update(0.0, 0.0)
     assert det.state == MovementState.FECHADO
-    det.update(0.9, 0.1)   # cruza o limiar: inicia a abertura
+    det.update(0.9, 0.1)   # cruza o limiar: confirma a abertura
     assert det.state == MovementState.ABRINDO
     det.update(0.9, 0.2)   # mantem aberto
     assert det.state == MovementState.ABERTO
-    det.update(0.1, 0.3)   # fecha: conclui o ciclo
+    det.update(0.0, 0.3)   # 1o frame na banda "realmente fechada" (candidato)
     assert det.state == MovementState.FECHANDO
+    assert det.repetitions == 0   # ainda nao confirmado (janela de estabilidade)
+    det.update(0.0, 0.4)   # ainda dentro da janela (0.1s < 0.15s)
+    assert det.repetitions == 0
+    det.update(0.0, 0.5)   # confirma o fechamento (0.2s >= 0.15s)
+    assert det.state == MovementState.FECHADO  # confirmado: ja mostra fechado, nao mais "fechando"
     assert det.repetitions == 1
+    assert abs(det.cycles[0].end_time - 0.3) < 1e-9  # fim = 1o frame da corrida estavel
+    assert abs(det.cycles[0].end_time - 0.3) < 1e-9  # fim = 1o frame estavel, nao o 2o
 
 
 # --------------------------------------------------------------------------

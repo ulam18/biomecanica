@@ -25,9 +25,22 @@ import numpy as np
 from .config import CycleConfig, Landmark, SYMMETRIC_PAIRS
 from .landmarks import FaceLandmarks
 
-# Escala do indice de simetria: um desvio medio (relativo a largura facial)
-# igual a este valor leva o indice a 0. 0.15 (~15%) e generoso: faces normais
-# ficam bem acima de 0.9.
+# Rotulo/descricao da unidade "relativa" usada em abertura e lateralidade
+# (absoluta e dinamica): o denominador e SEMPRE a distancia interocular
+# (norm(EYE_OUTER_RIGHT - EYE_OUTER_LEFT), cantos externos dos olhos) -- NAO
+# a largura total do rosto (ex.: bochecha a bochecha) nem qualquer outra
+# distancia. Ver `compute_frame_metrics` / `_face_frame`. Usado em HUD,
+# graficos e metadados para nao chamar de "largura facial" o que na verdade
+# e a distancia interocular.
+REL_UNIT_LABEL = "adimensional (norm. pela dist. interocular)"
+REL_UNIT_DESCRIPTION = (
+    "adimensional - normalizado pela distancia interocular "
+    "(cantos externos dos olhos, landmarks 33-263)"
+)
+
+# Escala do indice de simetria: um desvio medio (relativo a distancia
+# interocular, cantos externos dos olhos) igual a este valor leva o indice a
+# 0. 0.15 (~15%) e generoso: faces normais ficam bem acima de 0.9.
 SYMMETRY_SCALE = 0.15
 
 
@@ -203,14 +216,112 @@ def compute_frame_metrics(
 
 @dataclass
 class Cycle:
-    """Um ciclo completo de abertura/fechamento."""
+    """
+    Um ciclo completo de abertura/fechamento, com as metricas laterais
+    associadas (secao 5 do escopo de refinamento frontal).
+
+    - `baseline_opening`: referencia calibrada de "boca fechada" (usada para
+      `amplitude` = pico - referencia).
+    - `start_opening`/`end_opening`: abertura na amostra usada como inicio e
+      fim EXPORTADOS do ciclo (ver `closed_baseline_limit` abaixo -- nao sao
+      necessariamente os frames de cruzamento dos limiares de histerese da
+      maquina de estados).
+    - `closed_baseline_limit`: banda de "boca realmente fechada"
+      (baseline + boundary_closed_fraction*span) usada para validar
+      inicio/fim, DISTINTA dos limiares de abertura/fechamento (60%/25%) da
+      maquina de estados (esses continuam existindo so para a histerese).
+    - `start_within_baseline`/`end_within_baseline`: True se a amostra de
+      inicio/fim de fato estiver dentro dessa banda (False so no caso-limite
+      em que a sessao comecou/terminou sem material suficiente no pre-buffer
+      -- nesse caso NAO se deve descrever o ciclo como "fechado" na ponta
+      correspondente).
+    - `lateral_*_at_peak`: valor absoluto/dinamico no instante do PICO de
+      abertura (nao no inicio/fim do ciclo).
+    - `lateral_dynamic_max/min/abs_max/mean`: estatisticas de `lateral_dynamic`
+      ao longo de TODO o ciclo (abrindo->fechando).
+    """
+    cycle_id: int
     start_time: float
     end_time: float
-    peak_opening: float      # abertura maxima relativa no ciclo
+    peak_time: float
+    peak_opening: float          # abertura maxima relativa no ciclo (valor bruto de pico)
+    baseline_opening: float      # referencia "fechado" calibrada (para amplitude)
+    start_opening: float         # abertura na amostra de inicio exportada
+    end_opening: float           # abertura na amostra de fim exportada
+    closed_baseline_limit: float
+    start_within_baseline: bool
+    end_within_baseline: bool
+    lateral_absolute_at_peak: float | None = None
+    lateral_dynamic_at_peak: float | None = None
+    lateral_dynamic_max: float | None = None
+    lateral_dynamic_min: float | None = None
+    lateral_dynamic_abs_max: float | None = None
+    lateral_dynamic_mean: float | None = None
+    # -- Origem do inicio exportado (secao 1/2 do refinamento de precisao) --
+    start_origin: str = "last_stable_closed_sample"  # ou "fallback"
+    start_fallback_reason: str | None = None  # motivo, quando start_origin=="fallback"
+    anchor_confirm_gap_s: float = 0.0  # tempo entre a ancora fechada e a confirmacao (abertura lenta)
+    # -- Direcao pelo plato de abertura maxima (secao 3) ---------------------
+    lateral_dynamic_median_plateau: float | None = None
+    plateau_sample_count: int = 0
+    plateau_used_fallback: bool = False
 
     @property
     def duration(self) -> float:
         return self.end_time - self.start_time
+
+    @property
+    def amplitude(self) -> float:
+        """Abertura real do ciclo (pico - referencia de boca fechada)."""
+        return self.peak_opening - self.baseline_opening
+
+    @property
+    def opening_velocity(self) -> float:
+        """Velocidade media de abertura (amplitude / tempo ate o pico)."""
+        dt = self.peak_time - self.start_time
+        return self.amplitude / dt if dt > 1e-6 else 0.0
+
+    @property
+    def closing_velocity(self) -> float:
+        """Velocidade media de fechamento (queda desde o pico / tempo apos o pico)."""
+        dt = self.end_time - self.peak_time
+        return (self.peak_opening - self.end_opening) / dt if dt > 1e-6 else 0.0
+
+
+def cycle_predominant_direction(
+    cycle: Cycle, mirrored: bool, deadzone: float = 0.02
+) -> tuple[str, float]:
+    """
+    Direcao anatomica predominante do ciclo.
+
+    CRITERIO (secao 3 do refinamento de precisao): usa a MEDIANA de
+    `lateral_dynamic_filtered` no PLATO de abertura maxima (amostras com
+    abertura >= 95% do pico do ciclo), nao o valor de um unico frame no
+    pico exato -- um so frame ruidoso podia decidir a classificacao por
+    margens minimas (caso real: ciclo classificado "direita" por 0.0006
+    acima da deadzone so por causa do frame do pico; a mediana do plato
+    ficava claramente dentro da zona "centro"). Mediana (nao media) para
+    resistir a outliers isolados dentro do proprio plato.
+
+    `cycle.lateral_dynamic_median_plateau` ja vem calculado por
+    `CycleDetector._finish_cycle` (com fallback para uma janela temporal ao
+    redor do pico quando o plato tem poucas amostras -- ver
+    CycleConfig.direction_min_plateau_samples/direction_plateau_fallback_window_s).
+    Se nao houver plato nem fallback com dado (ciclo sem `lateral_dynamic`
+    disponivel), cai para `lateral_dynamic_at_peak` e depois `lateral_dynamic_mean`.
+
+    O valor e comparado a `deadzone` (tipicamente `effective_direction_deadzone`,
+    adaptativo ao ruido da calibracao) usando a MESMA convencao de sinal da
+    interface/CSV. Retorna (direcao, valor_usado_na_classificacao) -- o valor
+    usado e sempre reportado junto (ver exporter._cycle_summaries), nunca fica
+    sem explicacao.
+    """
+    value = cycle.lateral_dynamic_median_plateau
+    if value is None:
+        value = cycle.lateral_dynamic_at_peak
+    if value is None:
+        value = cycle.lateral_dynamic_mean if cycle.lateral_dynamic_mean is not None else 0.0
+    return lateral_direction(value, mirrored, deadzone=deadzone), value
 
 
 class CycleDetector:
@@ -230,6 +341,8 @@ class CycleDetector:
         # Faixa de referencia para os limiares.
         self._baseline: float | None = None   # abertura com boca fechada
         self._span: float | None = None        # baseline -> pico calibrado
+        self._lateral_baseline: float | None = None  # lateral_absolute neutro (boca fechada)
+        self._lateral_baseline_std: float | None = None  # ruido do baseline lateral (calibracao)
 
         # Faixa dinamica (fallback sem calibracao).
         self._dyn_min = float("inf")
@@ -237,25 +350,95 @@ class CycleDetector:
 
         # Estado do ciclo em andamento.
         self._cycle_start_t: float | None = None
+        self._cycle_start_opening = 0.0
         self._cycle_peak = 0.0
+        self._cycle_peak_time = 0.0
+        self._cycle_baseline_opening = 0.0
+        self._cycle_closed_limit = 0.0
+        self._cycle_start_origin = "last_stable_closed_sample"
+        self._cycle_start_fallback_reason: str | None = None
+        self._cycle_anchor_confirm_gap_s = 0.0
+        self._cyc_lat_abs_at_peak: float | None = None
+        self._cyc_lat_dyn_at_peak: float | None = None
+        self._cyc_lat_dyn_max: float | None = None
+        self._cyc_lat_dyn_min: float | None = None
+        self._cyc_lat_dyn_abs_max: float | None = None
+        self._cyc_lat_dyn_sum = 0.0
+        self._cyc_lat_dyn_n = 0
+        # Amostras (t, opening, lateral_dynamic) do ciclo INTEIRO (abrindo->
+        # fechando), usadas ao final para achar o plato de abertura maxima e
+        # a mediana de lateral_dynamic nele (ver _finish_cycle).
+        self._cyc_samples: list[tuple[float, float, float | None]] = []
+
+        # -- Recuperacao do inicio real do ciclo (secao 1 do refinamento de
+        # precisao) -----------------------------------------------------
+        # Ultima amostra VALIDA vista com abertura dentro da banda "realmente
+        # fechada" (closed_baseline_limit), atualizada continuamente enquanto
+        # NENHUM ciclo esta em andamento e nenhum candidato de abertura esta
+        # em curso. E a fonte PRINCIPAL do inicio exportado -- ao contrario
+        # do pre-buffer (janela de tempo fixa), nao se perde numa abertura
+        # lenta que demore mais que prebuffer_seconds ate confirmar.
+        self._last_stable_closed_sample: tuple[float, float, float | None, float | None] | None = None
+        # Copia CONGELADA de `_last_stable_closed_sample` no instante em que
+        # o sinal sai da banda fechada (inicio candidato). Fica intocada
+        # durante toda a abertura candidata; usada como inicio do ciclo se
+        # confirmar, ou descartada (junto com `_candidate_samples`) se o
+        # sinal cair de volta ao fechado sem confirmar (ruido).
+        self._candidate_anchor: tuple[float, float, float | None, float | None] | None = None
+        # Amostras acumuladas DURANTE o candidato (desde que saiu da banda
+        # fechada ate a confirmacao), para reconstituir pico/lateral daquele
+        # trecho quando o ciclo e confirmado.
+        self._candidate_samples: list[tuple[float, float, float | None, float | None]] = []
+
+        # PRE-BUFFER: janela deslizante de tempo (config.prebuffer_seconds),
+        # mantida so como recurso AUXILIAR (nao a fonte principal do inicio)
+        # para o caso em que nao ha `_last_stable_closed_sample` valido (ex.:
+        # a sessao comecou com o rosto ja em movimento, sem nenhuma amostra
+        # fechada observada ainda). Ver _begin_cycle().
+        self._prebuffer: list[tuple[float, float, float | None, float | None]] = []
+        # Fim CANDIDATO (dentro de um ciclo confirmado): sequencia de frames
+        # consecutivos DENTRO de closed_baseline_limit (banda estreita, nao
+        # o limiar de fechamento de 25% da histerese); confirmada apos
+        # close_stability_seconds (duracao, nao contagem de frames), usando
+        # o PRIMEIRO frame da sequencia como fim exportado. Ver _finish_cycle()
+        # -- logica de fechamento INALTERADA nesta rodada.
+        self._closing_pending: list[tuple[float, float]] = []
 
     # -- Calibracao -------------------------------------------------------
-    def calibrate(self, closed_value: float, open_value: float) -> None:
-        """Define a faixa com base em amostras de boca fechada e aberta."""
+    def calibrate(
+        self,
+        closed_value: float,
+        open_value: float,
+        lateral_baseline: float | None = None,
+        lateral_baseline_std: float | None = None,
+    ) -> None:
+        """
+        Define a faixa de abertura com base em amostras de boca fechada e
+        aberta, e opcionalmente o baseline neutro de lateralidade (mediana)
+        e seu desvio-padrao (mesma fase de boca fechada da calibracao) --
+        usado para adaptar `effective_direction_deadzone` ao ruido real.
+        """
         self._baseline = closed_value
         self._span = max(open_value - closed_value, 1e-6)
+        if lateral_baseline is not None:
+            self._lateral_baseline = lateral_baseline
+        if lateral_baseline_std is not None:
+            self._lateral_baseline_std = lateral_baseline_std
 
     def clear_calibration(self) -> None:
-        """Remove a calibracao atual (repeticoes voltam a usar a faixa dinamica)."""
+        """Remove a calibracao atual (opening, baseline lateral e seu ruido; tecla X)."""
         self._baseline = None
         self._span = None
+        self._lateral_baseline = None
+        self._lateral_baseline_std = None
 
     def reset_session(self) -> None:
         """
         Reinicia o estado, os ciclos e a faixa dinamica para uma NOVA sessao,
-        preservando a calibracao (baseline/span) ja existente. Usado ao
-        iniciar uma gravacao (R) e ao zerar a sessao atual (Z), para que
-        repeticoes nunca sejam herdadas de fora do intervalo gravado.
+        preservando a calibracao (baseline/span/lateral_baseline/std) ja
+        existente. Usado ao iniciar uma gravacao (R) e ao zerar a sessao
+        atual (Z), para que repeticoes nunca sejam herdadas de fora do
+        intervalo gravado.
         """
         self.state = MovementState.FECHADO
         self.cycles = []
@@ -263,6 +446,15 @@ class CycleDetector:
         self._dyn_max = float("-inf")
         self._cycle_start_t = None
         self._cycle_peak = 0.0
+        self._cycle_peak_time = 0.0
+        self._cyc_lat_dyn_sum = 0.0
+        self._cyc_lat_dyn_n = 0
+        self._cyc_samples = []
+        self._last_stable_closed_sample = None
+        self._candidate_anchor = None
+        self._candidate_samples = []
+        self._prebuffer = []
+        self._closing_pending = []
 
     @property
     def is_calibrated(self) -> bool:
@@ -278,8 +470,29 @@ class CycleDetector:
         """Faixa (fechado -> aberto) usada para escalar os limiares."""
         return self._span
 
-    def _thresholds(self, opening: float) -> tuple[float, float]:
-        """Retorna (limiar_abrir, limiar_fechar) em unidades de abertura."""
+    @property
+    def lateral_baseline(self) -> float | None:
+        """Lateral_absolute neutro (mediana na fase de boca fechada da calibracao)."""
+        return self._lateral_baseline
+
+    @property
+    def lateral_baseline_std(self) -> float | None:
+        """Desvio-padrao da lateral_absolute na fase de boca fechada da calibracao."""
+        return self._lateral_baseline_std
+
+    @property
+    def effective_direction_deadzone(self) -> float:
+        """
+        Limiar efetivo (adaptativo) para classificar direita/esquerda/centro:
+        max(direction_deadzone_min, direction_noise_multiplier *
+        lateral_baseline_std). Sem baseline_std conhecido (nao calibrado ou
+        sem amostras laterais), cai para o piso `direction_deadzone_min`.
+        """
+        std = self._lateral_baseline_std or 0.0
+        return max(self.config.direction_deadzone_min, self.config.direction_noise_multiplier * std)
+
+    def _thresholds(self, opening: float) -> tuple[float, float, float, float]:
+        """Retorna (limiar_abrir, limiar_fechar, base, faixa) em unidades de abertura."""
         if self.is_calibrated:
             base, span = self._baseline, self._span
         else:
@@ -290,45 +503,286 @@ class CycleDetector:
             span = max(self._dyn_max - self._dyn_min, 1e-6)
         open_th = base + self.config.open_fraction * span
         close_th = base + self.config.close_fraction * span
-        return open_th, close_th
+        return open_th, close_th, base, span
+
+    def _closed_baseline_limit(self, base: float, span: float) -> float:
+        """
+        Banda de "boca realmente fechada" (secao 4 do refinamento): mais
+        estreita que o limiar de fechamento da histerese (25%), usada para
+        validar os limites EXPORTADOS do ciclo (inicio/fim), nao a maquina
+        de estados em si.
+        """
+        return base + self.config.boundary_closed_fraction * span
+
+    def _accumulate_lateral(self, lateral_dynamic: float | None) -> None:
+        if lateral_dynamic is None:
+            return
+        self._cyc_lat_dyn_max = (
+            lateral_dynamic if self._cyc_lat_dyn_max is None
+            else max(self._cyc_lat_dyn_max, lateral_dynamic)
+        )
+        self._cyc_lat_dyn_min = (
+            lateral_dynamic if self._cyc_lat_dyn_min is None
+            else min(self._cyc_lat_dyn_min, lateral_dynamic)
+        )
+        abs_v = abs(lateral_dynamic)
+        self._cyc_lat_dyn_abs_max = (
+            abs_v if self._cyc_lat_dyn_abs_max is None else max(self._cyc_lat_dyn_abs_max, abs_v)
+        )
+        self._cyc_lat_dyn_sum += lateral_dynamic
+        self._cyc_lat_dyn_n += 1
+
+    def _begin_cycle(self, base: float, span: float) -> None:
+        """
+        Confirma o inicio do ciclo usando `_candidate_anchor` -- a copia
+        CONGELADA de `_last_stable_closed_sample` no instante em que o sinal
+        saiu da banda fechada (nao depende de uma janela de tempo fixa: uma
+        abertura lenta, levando mais que prebuffer_seconds ate confirmar, nao
+        perde a posicao realmente fechada). Fallback documentado, nesta ordem,
+        quando nao ha ancora (nenhuma amostra fechada observada desde o
+        ultimo ciclo/reset -- ex.: sessao comecou ja em movimento):
+          1. amostra mais antiga do pre-buffer (recurso auxiliar);
+          2. o proprio primeiro frame candidato (`_candidate_samples[0]`).
+        Nunca inventa um valor: quando cai em fallback, o inicio exportado
+        normalmente NAO estara dentro da banda fechada
+        (`start_within_baseline=False`) e o motivo fica registrado.
+        """
+        closed_limit = self._closed_baseline_limit(base, span)
+        self._cycle_closed_limit = closed_limit
+
+        replay = list(self._candidate_samples)  # sempre nao-vazio neste ponto (inclui o frame de confirmacao)
+
+        if self._candidate_anchor is not None:
+            anchor = self._candidate_anchor
+            self._cycle_start_origin = "last_stable_closed_sample"
+            self._cycle_start_fallback_reason = None
+            full_replay = [anchor] + replay
+        elif self._prebuffer:
+            anchor = self._prebuffer[0]
+            self._cycle_start_origin = "fallback"
+            self._cycle_start_fallback_reason = (
+                "sem last_stable_closed_sample (nenhuma amostra fechada observada "
+                "antes deste movimento); usada a amostra mais antiga do pre-buffer."
+            )
+            full_replay = [anchor] + replay
+        else:
+            anchor = replay[0]
+            self._cycle_start_origin = "fallback"
+            self._cycle_start_fallback_reason = (
+                "sem last_stable_closed_sample nem pre-buffer disponivel; usado o "
+                "primeiro frame candidato (provavel inicio de sessao ja em movimento)."
+            )
+            full_replay = replay
+
+        self._cycle_anchor_confirm_gap_s = replay[-1][0] - anchor[0]
+
+        first_t, first_opening, first_abs, first_dyn = anchor
+        self._cycle_start_t = first_t
+        self._cycle_start_opening = first_opening
+        self._cycle_baseline_opening = base
+        self._cycle_peak = first_opening
+        self._cycle_peak_time = first_t
+        self._cyc_lat_abs_at_peak = first_abs
+        self._cyc_lat_dyn_at_peak = first_dyn
+        self._cyc_lat_dyn_max = None
+        self._cyc_lat_dyn_min = None
+        self._cyc_lat_dyn_abs_max = None
+        self._cyc_lat_dyn_sum = 0.0
+        self._cyc_lat_dyn_n = 0
+        self._cyc_samples = []
+        for pt, popening, pabs, pdyn in full_replay:
+            if popening > self._cycle_peak:
+                self._cycle_peak = popening
+                self._cycle_peak_time = pt
+                self._cyc_lat_abs_at_peak = pabs
+                self._cyc_lat_dyn_at_peak = pdyn
+            self._accumulate_lateral(pdyn)
+            self._cyc_samples.append((pt, popening, pdyn))
+
+        self._candidate_anchor = None
+        self._candidate_samples = []
+        self._prebuffer = []
+        self._closing_pending = []
+
+    def _plateau_median(self) -> tuple[float | None, int, bool]:
+        """
+        Mediana de lateral_dynamic no plato de abertura maxima do ciclo
+        (amostras com abertura >= direction_plateau_fraction*pico). Se o
+        plato tiver poucas amostras (< direction_min_plateau_samples), cai
+        no fallback de uma janela temporal ao redor de peak_time. Retorna
+        (mediana, numero_de_amostras_usadas, usou_fallback).
+        """
+        if not self._cyc_samples or self._cycle_peak <= 1e-9:
+            return None, 0, False
+
+        threshold = self.config.direction_plateau_fraction * self._cycle_peak
+        plateau_vals = [
+            dyn for (_pt, popening, dyn) in self._cyc_samples
+            if popening >= threshold and dyn is not None
+        ]
+        if len(plateau_vals) >= self.config.direction_min_plateau_samples:
+            return float(np.median(plateau_vals)), len(plateau_vals), False
+
+        window = self.config.direction_plateau_fallback_window_s
+        window_vals = [
+            dyn for (pt, _popening, dyn) in self._cyc_samples
+            if abs(pt - self._cycle_peak_time) <= window and dyn is not None
+        ]
+        if window_vals:
+            return float(np.median(window_vals)), len(window_vals), True
+
+        # Ultimo recurso: os proprios valores do plato (mesmo poucos), se houver.
+        if plateau_vals:
+            return float(np.median(plateau_vals)), len(plateau_vals), True
+        return None, 0, True
+
+    def _finish_cycle(self, closed_limit: float) -> Cycle | None:
+        """
+        Confirma o fim do ciclo usando o 1o frame da corrida estavel (banda
+        fechada) -- logica de fechamento INALTERADA nesta rodada. Ao
+        finalizar, tambem calcula a mediana de lateral_dynamic no plato de
+        abertura maxima (ver `_plateau_median`), usada pela classificacao de
+        direcao (secao 3 do refinamento de precisao).
+        """
+        end_t, end_opening = self._closing_pending[0]
+        cycle = None
+        if self._cycle_start_t is not None:
+            duration = end_t - self._cycle_start_t
+            if duration >= self.config.min_cycle_seconds:
+                lat_mean = (
+                    self._cyc_lat_dyn_sum / self._cyc_lat_dyn_n
+                    if self._cyc_lat_dyn_n else None
+                )
+                median_plateau, plateau_n, plateau_fallback = self._plateau_median()
+                cycle = Cycle(
+                    cycle_id=len(self.cycles) + 1,
+                    start_time=self._cycle_start_t,
+                    end_time=end_t,
+                    peak_time=self._cycle_peak_time,
+                    peak_opening=self._cycle_peak,
+                    baseline_opening=self._cycle_baseline_opening,
+                    start_opening=self._cycle_start_opening,
+                    end_opening=end_opening,
+                    closed_baseline_limit=self._cycle_closed_limit,
+                    start_within_baseline=self._cycle_start_opening <= self._cycle_closed_limit,
+                    end_within_baseline=end_opening <= closed_limit,
+                    lateral_absolute_at_peak=self._cyc_lat_abs_at_peak,
+                    lateral_dynamic_at_peak=self._cyc_lat_dyn_at_peak,
+                    lateral_dynamic_max=self._cyc_lat_dyn_max,
+                    lateral_dynamic_min=self._cyc_lat_dyn_min,
+                    lateral_dynamic_abs_max=self._cyc_lat_dyn_abs_max,
+                    lateral_dynamic_mean=lat_mean,
+                    start_origin=self._cycle_start_origin,
+                    start_fallback_reason=self._cycle_start_fallback_reason,
+                    anchor_confirm_gap_s=self._cycle_anchor_confirm_gap_s,
+                    lateral_dynamic_median_plateau=median_plateau,
+                    plateau_sample_count=plateau_n,
+                    plateau_used_fallback=plateau_fallback,
+                )
+                self.cycles.append(cycle)
+        self._cycle_start_t = None
+        self._cycle_peak = 0.0
+        self._cyc_samples = []
+        self._closing_pending = []
+        return cycle
 
     # -- Atualizacao por frame -------------------------------------------
-    def update(self, opening: float, t: float) -> bool:
+    def update(
+        self,
+        opening: float,
+        t: float,
+        lateral_absolute: float | None = None,
+        lateral_dynamic: float | None = None,
+    ) -> bool:
         """
         Atualiza a maquina de estados com a abertura atual no instante t.
+        `lateral_absolute`/`lateral_dynamic` (opcionais) sao acumulados
+        durante o ciclo em andamento para as metricas por ciclo (secao 5).
         Retorna True se um ciclo foi concluido neste frame.
+
+        Delimitacao completa do ciclo (boca fechada -> abertura -> pico ->
+        fechamento -> boca fechada), preservando a histerese da maquina de
+        estados (open_fraction=60% / close_fraction=25%) so para decidir
+        QUANDO confirmar abertura/fechamento (evitar ruido), mas usando uma
+        banda mais estreita (`closed_baseline_limit`, boundary_closed_fraction
+        =5% por padrao) para decidir OS LIMITES EXPORTADOS do ciclo:
+          - INICIO: `last_stable_closed_sample` e atualizada em TODO frame
+            com abertura dentro da banda fechada, enquanto nenhum ciclo/
+            candidato esta em andamento. Assim que o sinal sai da banda, essa
+            amostra e CONGELADA em `_candidate_anchor` (nao e mais
+            sobrescrita durante a abertura candidata, por mais longa que
+            seja -- ao contrario de uma janela de tempo fixa, nao se perde
+            numa abertura lenta). Se o limiar de abertura for atingido, o
+            ciclo comeca no anchor; se o sinal cair de volta ao fechado sem
+            confirmar, o anchor e descartado (ruido) e `last_stable_closed_
+            sample` volta a ser atualizado normalmente. O pre-buffer
+            (janela de tempo) so entra como fallback auxiliar quando nao ha
+            anchor (ver _begin_cycle).
+          - FIM: exige `close_stability_seconds` (duracao, nao numero de
+            frames -- equivalente em 10/15/30fps) de permanencia CONTINUA
+            dentro da banda fechada antes de confirmar; o fim exportado e o
+            primeiro frame dessa sequencia estavel. INALTERADO nesta rodada.
+        A ramificacao usa `self._cycle_start_t is not None` (nao `self.state`)
+        para saber se ha um ciclo em andamento -- `self.state` e so para
+        exibicao (fica FECHANDO assim que o sinal cruza o limiar de 25%,
+        mesmo antes da confirmacao pela banda estreita, para o biofeedback
+        continuar responsivo).
         """
-        open_th, close_th = self._thresholds(opening)
+        open_th, close_th, base, span = self._thresholds(opening)
         completed = False
 
-        if self.state in (MovementState.FECHADO, MovementState.FECHANDO):
-            if opening >= open_th:
-                # Inicio de uma nova abertura.
-                self.state = MovementState.ABRINDO
-                self._cycle_start_t = t
-                self._cycle_peak = opening
+        if self._cycle_start_t is None:
+            # Nenhum ciclo em andamento: rastreia a ultima amostra fechada
+            # (fonte principal do inicio) e mantem o pre-buffer (auxiliar).
+            self.state = MovementState.FECHADO
+            closed_limit = self._closed_baseline_limit(base, span)
+            sample = (t, opening, lateral_absolute, lateral_dynamic)
+
+            if opening <= closed_limit:
+                self._last_stable_closed_sample = sample
+                self._candidate_anchor = None
+                self._candidate_samples = []
             else:
-                self.state = MovementState.FECHADO
-        elif self.state in (MovementState.ABRINDO, MovementState.ABERTO):
-            self._cycle_peak = max(self._cycle_peak, opening)
+                if self._candidate_anchor is None:
+                    # 1o frame fora da banda fechada: congela a ancora (pode
+                    # ser None, se nunca vimos uma amostra fechada ainda).
+                    self._candidate_anchor = self._last_stable_closed_sample
+                self._candidate_samples.append(sample)
+
+            self._prebuffer.append(sample)
+            while self._prebuffer and (t - self._prebuffer[0][0]) > self.config.prebuffer_seconds:
+                self._prebuffer.pop(0)
+
             if opening >= open_th:
-                self.state = MovementState.ABERTO
+                self._begin_cycle(base, span)
+                self.state = MovementState.ABRINDO
+        else:
+            # Ciclo em andamento (abrindo / aberto / fechando-candidato).
+            self._cyc_samples.append((t, opening, lateral_dynamic))
+            if opening > self._cycle_peak:
+                self._cycle_peak = opening
+                self._cycle_peak_time = t
+                self._cyc_lat_abs_at_peak = lateral_absolute
+                self._cyc_lat_dyn_at_peak = lateral_dynamic
+            self._accumulate_lateral(lateral_dynamic)
+
+            closed_limit = self._closed_baseline_limit(base, span)
+            if opening <= closed_limit:
+                self._closing_pending.append((t, opening))
+            else:
+                self._closing_pending = []  # saiu da banda fechada: reinicia a estabilidade
+
             if opening <= close_th:
-                # Fechou: fecha o ciclo.
                 self.state = MovementState.FECHANDO
-                if self._cycle_start_t is not None:
-                    duration = t - self._cycle_start_t
-                    if duration >= self.config.min_cycle_seconds:
-                        self.cycles.append(
-                            Cycle(
-                                start_time=self._cycle_start_t,
-                                end_time=t,
-                                peak_opening=self._cycle_peak,
-                            )
-                        )
-                        completed = True
-                self._cycle_start_t = None
-                self._cycle_peak = 0.0
+            else:
+                self.state = MovementState.ABERTO if opening >= open_th else MovementState.ABRINDO
+
+            if self._closing_pending:
+                run_span = self._closing_pending[-1][0] - self._closing_pending[0][0]
+                if run_span >= self.config.close_stability_seconds:
+                    cycle = self._finish_cycle(closed_limit)
+                    self.state = MovementState.FECHADO
+                    completed = cycle is not None
 
         return completed
 
@@ -342,27 +796,44 @@ class CycleDetector:
         Metricas de repetibilidade entre os ciclos detectados.
 
         Retorna medias, desvios-padrao e coeficiente de variacao (CV) da
-        amplitude e da duracao. CV baixo indica movimento mais repetivel.
+        amplitude (pico - referencia "fechado" do ciclo, nao o pico bruto) e
+        da duracao, alem de estatisticas do desvio lateral dinamico entre
+        ciclos. CV baixo indica movimento mais repetivel.
         """
         if not self.cycles:
             return {}
 
-        peaks = np.array([c.peak_opening for c in self.cycles], dtype=float)
+        amplitudes = np.array([c.amplitude for c in self.cycles], dtype=float)
         durations = np.array([c.duration for c in self.cycles], dtype=float)
 
         def cv(arr: np.ndarray) -> float:
             m = float(np.mean(arr))
             return float(np.std(arr) / m) if m > 1e-9 else 0.0
 
-        return {
+        result = {
             "n_ciclos": float(len(self.cycles)),
-            "amplitude_media": float(np.mean(peaks)),
-            "amplitude_dp": float(np.std(peaks)),
-            "amplitude_cv": cv(peaks),
+            "amplitude_media": float(np.mean(amplitudes)),
+            "amplitude_dp": float(np.std(amplitudes)),
+            "amplitude_cv": cv(amplitudes),
             "duracao_media_s": float(np.mean(durations)),
             "duracao_dp_s": float(np.std(durations)),
             "duracao_cv": cv(durations),
         }
+
+        abs_max_vals = [c.lateral_dynamic_abs_max for c in self.cycles
+                         if c.lateral_dynamic_abs_max is not None]
+        max_pos_vals = [c.lateral_dynamic_max for c in self.cycles
+                         if c.lateral_dynamic_max is not None]
+        min_neg_vals = [c.lateral_dynamic_min for c in self.cycles
+                         if c.lateral_dynamic_min is not None]
+        if abs_max_vals:
+            result["lateral_dinamico_absmax_media"] = float(np.mean(abs_max_vals))
+        if max_pos_vals:
+            result["lateral_dinamico_max_positivo"] = float(np.max(max_pos_vals))
+        if min_neg_vals:
+            result["lateral_dinamico_min_negativo"] = float(np.min(min_neg_vals))
+
+        return result
 
 
 # ===========================================================================

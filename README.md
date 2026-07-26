@@ -20,9 +20,15 @@ média facial e queixo) e calcula, **em tempo real**:
 
 | Métrica | Descrição |
 |---|---|
-| **Abertura bucal relativa** | Distância vertical entre os lábios, normalizada pela largura facial (invariante à distância da câmera). |
-| **Desvio lateral da mandíbula** | Deslocamento horizontal do queixo em relação à linha média facial (com sinal). |
-| **Repetibilidade** | Contagem de ciclos de abertura/fechamento, amplitude, duração e coeficiente de variação entre repetições. |
+| **Abertura bucal relativa** | Distância vertical entre os lábios, adimensional — normalizada pela distância interocular (cantos externos dos olhos), não pela largura total do rosto. Invariante à distância da câmera. |
+| **Posição do queixo** (lateral absoluta) | Deslocamento horizontal do queixo em relação à linha média facial (com sinal; mesma normalização acima). |
+| **Movimento desde o neutro** (lateral dinâmica) | `posição do queixo − posição neutra calibrada` (baseline da fase de boca fechada da calibração); fica ~0 na posição neutra mesmo que a posição absoluta não seja zero (assimetria facial estática). |
+| **Repetibilidade** | Contagem de ciclos de abertura/fechamento (do fechado ao fechado), amplitude, duração e coeficiente de variação entre repetições. |
+
+> Convenção de sinal: **positivo = direita anatômica do paciente, negativo =
+> esquerda anatômica** — sempre do ponto de vista do próprio paciente, com a
+> correção automática para imagem espelhada (`--no-flip` desliga o espelho e
+> os rótulos "direita"/"esquerda" se ajustam sozinhos).
 
 A imagem ao vivo mostra os marcadores faciais, uma barra de biofeedback da
 abertura e um painel com os valores instantâneos. Os dados podem ser

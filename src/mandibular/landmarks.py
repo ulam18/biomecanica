@@ -28,11 +28,19 @@ class FaceLandmarks:
     Opcionalmente carrega a profundidade relativa `depth` (coordenada z do
     modelo, reescalada para pixels), util para estimar a rotacao horizontal da
     cabeca (yaw). Pode ser None quando a fonte nao fornece z.
+
+    `num_faces` e o numero TOTAL de faces detectadas no frame (nao so a
+    principal): usado pelo controle de qualidade para rejeitar frames com
+    mais de uma pessoa no quadro (ver DetectionConfig.max_num_faces e
+    QualityConfig.reject_multiple_faces). Os pontos/depth aqui sempre se
+    referem a face de maior confianca (indice 0); as demais nao sao usadas
+    para metricas, apenas contadas.
     """
     points: np.ndarray          # shape (N, 2), float32, em pixels
     image_width: int
     image_height: int
     depth: np.ndarray | None = None  # shape (N,), profundidade relativa (px)
+    num_faces: int = 1
 
     def point(self, index: int) -> np.ndarray:
         """Retorna o ponto (x, y) em pixels para o indice informado."""
@@ -114,7 +122,10 @@ class FaceMeshDetector:
         # z do modelo tem escala aproximada da largura normalizada; reescala
         # para pixels (x w) para ficar comparavel as coordenadas (x, y).
         depth = np.array([lm.z * w for lm in face], dtype=np.float32)
-        return FaceLandmarks(points=pts, image_width=w, image_height=h, depth=depth)
+        return FaceLandmarks(
+            points=pts, image_width=w, image_height=h, depth=depth,
+            num_faces=len(result.face_landmarks),
+        )
 
     def close(self) -> None:
         self._landmarker.close()
