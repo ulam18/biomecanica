@@ -99,8 +99,8 @@ de separação dos incisivos (p. 553).
 
 ## 3.6 Simetria e assimetria facial (fontes complementares)
 
-Esta seção fundamenta as métricas de **simetria** (vista frontal) e de **perfil**
-com literatura de análise facial e de assimetrias dentofaciais. As afirmações
+Esta seção fundamenta as métricas de **simetria** e proporções da **vista
+frontal** com literatura de análise facial e de assimetrias dentofaciais. As afirmações
 abaixo estão amarradas às fontes; onde a literatura **não** fornece um limiar,
 isso é declarado — o software **não** cria cortes clínicos inexistentes.
 
@@ -134,14 +134,17 @@ Do material de análise facial:
   **explicitamente desqualificada** como modelo científico (Camargos et al., 2009)
   — por isso **não** é usada como critério no software.
 
-### 3.6.4 Ângulo de perfil (classificação usada no modo perfil)
+### 3.6.4 Ângulo de perfil (revisão bibliográfica — não implementado)
+
+> **Nota (revisão do escopo):** a análise de **vista de perfil** foi **removida do software**. Em 2D, sem foto padronizada nem controle de distância e rotação da cabeça, as projeções e ângulos sagitais não se mostraram confiáveis. O sistema opera **apenas na vista frontal**. A revisão abaixo permanece como registro bibliográfico.
+
 Do material de análise facial, o **ângulo Glabela–Subnasal–Pogônio mole**:
 - **< 165°** → perfil **convexo** (padrão Classe II);
 - **> 175°** → perfil **côncavo** (padrão Classe III);
 - entre eles → perfil **reto** (Classe I).
 
-O software classifica sua estimativa de convexidade por essas faixas, com a
-ressalva de que o ângulo clínico é medido em **foto de perfil padronizada**.
+O ângulo clínico é medido em **foto de perfil padronizada** — condição que a
+captura por webcam não garante; por isso essa classificação não foi mantida.
 
 ### 3.6.5 Desvio mandibular / do mento
 Carlini & Gomes (2005) descrevem o desvio como deslocamento da **linha média
@@ -151,10 +154,12 @@ software estima pelo desvio horizontal do queixo (152) frente ao nasion (168).
 **casos cirúrgicos severos** (desvio de mento de **6–7 mm**), usados apenas como
 ordem de grandeza, com ressalva.
 
-### 3.6.7 Angulações de perfil de tecido mole (normas para triagem)
-Normas usadas por `classify_profile_prominence` para sinalizar proeminência fora
-do padrão (fora de **média ± 2 DP**). Valores **default** abaixo; são específicos
-de população/idade e o software aceita conjunto alternativo.
+### 3.6.7 Angulações de perfil de tecido mole (revisão bibliográfica — não implementado)
+
+> **Nota (revisão do escopo):** a análise de **vista de perfil** foi **removida do software**. Em 2D, sem foto padronizada nem controle de distância e rotação da cabeça, as projeções e ângulos sagitais não se mostraram confiáveis. O sistema opera **apenas na vista frontal**. A revisão abaixo permanece como registro bibliográfico.
+
+Normas levantadas na revisão para eventual triagem de proeminência (fora de
+**média ± 2 DP**). São específicas de população/idade.
 
 | Ângulo | Pontos | Norma (média ± DP) | Fonte |
 |---|---|---|---|
@@ -167,8 +172,8 @@ de população/idade e o software aceita conjunto alternativo.
 
 > A convexidade facial aparece na literatura em duas convenções equivalentes: o
 > ângulo **interno** G-Sn-Pg (~168°) e o **"ângulo de convexidade"** como desvio
-> (~12°), sendo um o suplemento do outro (180° − interno). O software usa o ângulo
-> interno. A linha E depende de calibração em mm (`--ref-mm`).
+> (~12°), sendo um o suplemento do outro (180° − interno). A linha E dependeria de
+> calibração em mm (`--ref-mm`).
 
 ### 3.6.6 Por que 2D é uma aproximação (limitação honesta)
 As fontes de diagnóstico tridimensional (Carvalho et al., 2025; Alencar et al.)
@@ -242,14 +247,13 @@ interativa.
 | Canto externo do olho esq./dir. | 33 / 263 | Referência facial (escala) + eixo horizontal (linha bipupilar) |
 | Canto interno do olho esq./dir. | 133 / 362 | Simetria (par) + quintos/intercantal |
 | Raiz do nariz (nasion) | 168 | Referência da linha média |
-| Ponta do nariz | 1 | Linha média + projeção no perfil |
+| Ponta do nariz | 1 | Linha média |
 | Asa do nariz esq./dir. | 129 / 358 | Simetria (par) + largura interalar |
 | Bochecha esq./dir. | 234 / 454 | Simetria (par) + largura facial (quintos) |
 | Lábio interno superior/inferior | 13 / 14 | Abertura bucal |
 | Cantos da boca | 61 / 291 | Extremidades + linha intercomissural (`cant`) |
-| Glabela / Subnasal | 9 / 2 | Terços faciais + ângulo de perfil |
-| Testa (≈trichion) | 10 | Traço do perfil (convexidade) |
-| Queixo (menton) | 152 | Desvio lateral + perfil |
+| Glabela / Subnasal | 9 / 2 | Terços faciais |
+| Queixo (menton) | 152 | Desvio lateral + linha média mandibular |
 
 ---
 
@@ -280,31 +284,35 @@ elas são aproximadamente invariantes à **inclinação da cabeça no plano (rol
   ao plano sagital médio; terços e quintos faciais (§3.6).
 - **No software** (`compute_symmetry`, `compute_proportions`): índice de simetria
   por pares homólogos esquerda/direita; ângulo `cant` (olhos × boca); razão dos
-  terços (G–Sn : Sn–Me), quintos (largura facial : olho) e cânone da boca.
+  terços (G–Sn : Sn–Me), quintos (largura facial : olho) e cânone da boca. A
+  simetria e os ângulos são calculados **dentro de `pipeline.process_frame`**, ou
+  seja, no mesmo quadro e sob a mesma regra dos demais sinais: quadro inválido
+  não gera medida (grava vazio, nunca zero).
 - **Angulações frontais** (`compute_frontal_angles`): **ângulo de desvio mandibular**
   — inclinação (com sinal) da linha média mandibular (Násio→Mento) em relação à
   vertical da linha média facial — e o `cant`. São medidas **relativas/intrasujeito**
   (sem corte clínico; "toda face é assimétrica", §3.6.1), gravadas por frame no CSV
-  para acompanhar a evolução (base do biofeedback: ângulo → 0). O desvio **linear**
+  (`simetria_indice`, `cant_graus`, `desvio_mandibular_graus`, `frontal`) e
+  agregadas por sessão no histórico `evolucao_<paciente>.csv`. O desvio **linear**
   do mento (mm/relativo) continua em `compute_frame_metrics` + `classify_chin_deviation`.
 
-### 7.6 Perfil sagital e triagem de proeminência
-- **Análise facial:** ângulo Glabela–Subnasal–Pogônio (165°/175°) → Classe I/II/III.
-- **No software** (`compute_profile_metrics`): projeção do queixo/nariz e ângulo de
-  convexidade, classificado por `classify_profile` (§3.6.4).
-- **Angulações de tecido mole** (`compute_profile_angles` + `classify_profile_prominence`):
-  mede convexidade facial (G-Sn-Pg), convexidade total (G-Prn-Pg), nasofrontal
-  (G-N-Prn), nasolabial (~Cm-Sn-Ls) e labiomental (Li-Sm-Pg); compara cada uma
-  com a norma (§3.6.7) e sinaliza o que está fora de **média ± 2 DP**, indicando
-  a região e o sentido (protrusão/retrusão). O **z-score** = (valor − média)/DP é
-  a base para o **biofeedback de evolução**: quanto mais perto de 0, mais dentro
-  do padrão — permite ao paciente acompanhar o aperfeiçoamento entre sessões
-  (os ângulos são gravados por frame no CSV).
+### 7.6 Biofeedback e leitura da sessão
+- **Ao vivo** (`feedback.py`): mensagens curtas e não diagnósticas sobre faixa de
+  abertura treinada, direção do desvio e repetibilidade, desenhadas no painel a
+  cada quadro.
+- **Persistido** (coluna `biofeedback` do CSV): as mesmas mensagens são gravadas
+  por quadro, o que permite ao relatório informar **por qual fração do tempo**
+  cada aviso esteve ativo — sem isso, o biofeedback desapareceria ao fim da sessão.
+- **Leitura medida a medida** (`report.build_findings`): cada medida vira um
+  registro com valor, **referência declarada** (faixa + fonte, ou a afirmação
+  explícita de que não há corte clínico) e a leitura em linguagem clínica. O
+  relatório HTML (`report.py`) e o PDF (`pdf_report.py`) renderizam essa **mesma**
+  lista, de modo que os dois documentos não possam divergir sobre o paciente.
 
 ### 7.7 Classificação e qualidade
 - **Classificação simples** (`classification.py`, Semana 3): abertura (40–60 mm),
-  didução (9–12 mm), perfil (Classe I/II/III) e simetria (faixa didática), cada
-  saída com **fonte** e ressalva.
+  didução (9–12 mm), desvio do mento e simetria (faixa didática), cada saída
+  com **fonte** e ressalva.
 - **Controle de qualidade** (`quality.py`, Semana 5): iluminação, contraste,
   distância (tamanho da face), frontalidade (yaw) e estabilidade (jitter) —
   heurísticas de engenharia que avisam quando a captura sai das condições válidas.

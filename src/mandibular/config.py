@@ -35,17 +35,16 @@ class Landmark:
     EYE_INNER_LEFT = 133  # canto interno do olho esquerdo
     EYE_INNER_RIGHT = 362 # canto interno do olho direito
 
-    # Pontos adicionais para simetria (pares esquerda/direita) e perfil
+    # Pontos adicionais da vista frontal: pares esquerda/direita (simetria) e
+    # pontos de linha media usados nas proporcoes faciais.
     NOSE_ALA_LEFT = 129   # asa do nariz, lado esquerdo
     NOSE_ALA_RIGHT = 358  # asa do nariz, lado direito
     CHEEK_LEFT = 234      # contorno da bochecha esquerda
     CHEEK_RIGHT = 454     # contorno da bochecha direita
-    FOREHEAD = 10         # topo da testa (proximo ao trichion), linha media
     GLABELA = 9           # glabela (entre as sobrancelhas), linha media
     SUBNASALE = 2         # base do nariz / columela (subnasal)
-    LABIALE_SUP = 0       # labiale superius (borda do labio superior)
-    LABIALE_INF = 17      # labiale inferius (borda do labio inferior)
-    SUBLABIALE = 200      # sulco mentolabial (entre labio inferior e mento)
+    FOREHEAD = 10         # topo da testa (proximo ao trichion), linha media --
+                          # usado na estimativa de pitch (profundidade testa-queixo)
 
 
 # Conjunto de pontos desenhados/destacados na interface.
@@ -231,6 +230,15 @@ class AppConfig:
     # de frame correspondente ao tempo real decorrido da sessao, nesta taxa.
     # Isso mantem a duracao do MP4 igual a duracao real da sessao mesmo que
     # o pipeline nao consiga processar 30 fps (ver VideoRecorder.write_paced).
+
+    # -- Modo de uso ---------------------------------------------------------
+    # simple_ui: painel em linguagem direta, sem numeros de depuracao. Pensado
+    # para uso clinico por quem nao acompanha o codigo; o modo tecnico (padrao
+    # na linha de comando) continua mostrando razao facial, estado do ciclo etc.
+    simple_ui: bool = False
+    show_buttons: bool = True      # faixa de botoes clicaveis no rodape
+    open_report: bool = False      # abrir o relatorio no navegador ao salvar
+    patient: str = ""              # nome do paciente (opcional; vai ao relatorio)
 
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     cycle: CycleConfig = field(default_factory=CycleConfig)

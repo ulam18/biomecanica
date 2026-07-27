@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mandibular.config import Landmark, QualityConfig  # noqa: E402
 from mandibular.filters import EMAFilter  # noqa: E402
 from mandibular.landmarks import FaceLandmarks  # noqa: E402
+from mandibular.pipeline import process_frame  # noqa: E402
 from mandibular.quality import FrameQuality, assess_quality  # noqa: E402
 
 N_LANDMARKS = 478
@@ -276,3 +277,35 @@ def test_compare_sessions_loads_valid_csv():
         _write_csv(path, list(compare_sessions.REQUIRED_COLUMNS))
         data = compare_sessions.load_session(path)
         assert len(data.rows) == 5
+
+
+# -- Analise frontal ligada ao pipeline -------------------------------------
+def _process(face):
+    return process_frame(face, 63.0, True, QualityConfig(),
+                         EMAFilter(0.5), EMAFilter(0.5), EMAFilter(0.3))
+
+
+def test_pipeline_calcula_simetria_e_angulos_em_frame_valido():
+    """
+    A analise frontal precisa sair do pipeline, e nao do app: e o que garante
+    que o modo ao vivo e a analise offline gravem as mesmas colunas.
+    """
+    fr = _process(make_face(opening_px=40.0, lateral_px=30.0))
+    assert fr.frame_valid
+    assert fr.symmetry is not None and fr.angles is not None
+    assert 0.0 <= fr.symmetry.index <= 1.0
+    # Queixo deslocado para +x deve dar angulo mandibular positivo.
+    assert fr.angles.mand_deviation_deg > 1.0
+
+
+def test_pipeline_sem_face_nao_produz_analise_frontal():
+    fr = _process(None)
+    assert not fr.frame_valid
+    assert fr.symmetry is None and fr.angles is None
+
+
+def test_pipeline_frame_invalido_nao_produz_analise_frontal():
+    # Rosto minusculo no quadro: reprovado pelo controle de qualidade.
+    fr = _process(make_face(scale=0.15))
+    assert not fr.frame_valid
+    assert fr.symmetry is None and fr.angles is None

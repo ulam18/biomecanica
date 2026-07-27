@@ -1,0 +1,72 @@
+========================================================================
+  ANÁLISE MANDIBULAR
+  Avaliação do movimento da mandíbula por câmera
+========================================================================
+
+O QUE FAZER AGORA (só na primeira vez)
+
+  1. Clique duas vezes no arquivo:
+
+           INSTALAR
+
+     (ícone de engrenagens, nesta mesma pasta)
+
+  2. Uma janela preta vai abrir e escrever várias mensagens.
+     Isso é normal. Pode demorar de 3 a 10 minutos.
+     Não feche a janela; espere aparecer "PRONTO!".
+
+     Se aparecer a mensagem "FALTA INSTALAR O PYTHON", siga as
+     instruções da tela: ela abre a página de download sozinha.
+     Ao instalar o Python, marque a caixinha
+     "Add python.exe to PATH" antes de clicar em "Install Now".
+     Depois, clique de novo em INSTALAR.
+
+  3. Terminada a instalação, procure na sua ÁREA DE TRABALHO
+     o ícone azul com um dente branco:
+
+           Análise Mandibular
+
+     É por ele que você abre o programa daqui em diante.
+
+
+NO DIA A DIA
+
+  - Abra o programa pelo ícone da Área de Trabalho.
+  - Digite o nome do paciente (opcional).
+  - Clique em INICIAR AVALIAÇÃO.
+  - Na janela da câmera, use os botões da parte de baixo:
+        1. CALIBRAR   2. GRAVAR   3. SALVAR
+  - Ao salvar, um relatório em PDF abre sozinho. Ele traz cada medida
+    do paciente com a faixa de referência e a leitura, os gráficos da
+    sessão e as limitações do método. É o arquivo para anexar ao
+    prontuário ou imprimir.
+
+  O passo a passo completo está dentro do programa, no botão
+  "Como usar (passo a passo)".
+
+
+PARA A AVALIAÇÃO SAIR EM MILÍMETROS
+
+  Meça com régua a distância entre os cantos externos dos olhos do
+  paciente e digite esse valor no campo "mm" do menu, antes de
+  iniciar. Sem essa medida, os resultados saem em proporção do
+  rosto, e não em milímetros.
+
+
+ONDE FICAM OS ARQUIVOS
+
+  Na pasta "resultados", uma subpasta por sessão, contendo o
+  relatório em PDF, a versão em HTML, os gráficos e a planilha com
+  os dados. Use o botão "Abrir a pasta dos resultados" no menu.
+
+
+IMPORTANTE
+
+  Este programa é uma ferramenta de APOIO e documentação. Os valores
+  são estimativas obtidas por câmera comum e não substituem o exame
+  clínico, a medição direta nem o diagnóstico profissional.
+
+========================================================================
+  Projeto acadêmico de Biomecânica - Engenharia Biomédica
+  Livia Santelli Pegoraro e Maria Luisa Gonçalves Ferreira
+========================================================================

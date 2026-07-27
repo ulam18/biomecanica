@@ -40,6 +40,13 @@ def parse_args() -> AppConfig:
         "pacing pelo tempo real da sessao; nao depende da velocidade do "
         "pipeline). Padrao: 30.",
     )
+    p.add_argument("--paciente", default="", help="nome do paciente (opcional); "
+                   "aparece no relatorio e agrupa o historico de evolucao")
+    p.add_argument("--simples", action="store_true",
+                   help="interface em linguagem direta, sem dados de depuracao, "
+                   "e abertura automatica do relatorio ao salvar (uso clinico)")
+    p.add_argument("--sem-botoes", dest="botoes", action="store_false", default=True,
+                   help="oculta a faixa de botoes clicaveis (so teclado)")
     a = p.parse_args()
 
     cfg = AppConfig()
@@ -50,6 +57,10 @@ def parse_args() -> AppConfig:
     cfg.reference_distance_mm = a.ref_mm
     cfg.output_dir = a.output
     cfg.video_output_fps = a.video_fps
+    cfg.patient = a.paciente
+    cfg.simple_ui = a.simples
+    cfg.open_report = a.simples
+    cfg.show_buttons = a.botoes
     return cfg
 
 

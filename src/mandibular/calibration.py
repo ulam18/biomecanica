@@ -111,12 +111,12 @@ class CalibrationAssistant:
 
         valid = opening_valid and lateral_valid
         if not opening_valid:
-            message = "Calibracao invalida: abra mais a boca e repita (tecle C)."
+            message = "Calibracao invalida: abra mais a boca e repita a calibracao."
         elif not lateral_valid:
             message = (
                 f"Calibracao invalida: mandibula/cabeca instavel na fase fechada "
                 f"(desvio lateral {lateral_std:.3f} > {self.MAX_LATERAL_BASELINE_STD:.3f}); "
-                f"mantenha-se parado e repita (tecle C)."
+                f"mantenha-se parado e repita a calibracao."
             )
         else:
             message = "Calibracao concluida."

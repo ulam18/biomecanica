@@ -1,7 +1,7 @@
 """
-Testes das analises faciais frontais/perfil portadas sobre a arquitetura de
-pipeline: simetria, angulos frontais (desvio mandibular), proporcoes, perfil,
-classificacao (com fontes) e evolucao do paciente.
+Testes das analises faciais frontais portadas sobre a arquitetura de pipeline:
+simetria, angulos frontais (desvio mandibular), proporcoes, classificacao
+(com fontes) e evolucao do paciente.
 
 Sao independentes de webcam (usam landmarks sinteticos) e do test_metrics.py
 original (que cobre a pipeline).
@@ -18,11 +18,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from mandibular.classification import (
-    PROFILE_ANGLE_NORMS,
     classify_diduction,
     classify_opening,
-    classify_profile,
-    classify_profile_prominence,
     classify_symmetry,
 )
 from mandibular.config import Landmark
@@ -35,10 +32,7 @@ from mandibular.evolution import (
 from mandibular.landmarks import FaceLandmarks
 from mandibular.metrics import (
     MovementState,
-    ProfileAngles,
     compute_frontal_angles,
-    compute_profile_angles,
-    compute_profile_metrics,
     compute_proportions,
     compute_symmetry,
 )
@@ -64,12 +58,8 @@ def make_face(opening_px=100.0, lateral_px=0.0, roll_deg=0.0, asym_px=0.0):
     pts[Landmark.NOSE_ALA_RIGHT] = (320.0, 300.0)
     pts[Landmark.CHEEK_LEFT] = (210.0, 320.0)
     pts[Landmark.CHEEK_RIGHT] = (390.0, 320.0)
-    pts[Landmark.FOREHEAD] = (300.0, 120.0)
     pts[Landmark.GLABELA] = (300.0, 180.0)
     pts[Landmark.SUBNASALE] = (300.0, 320.0)
-    pts[Landmark.LABIALE_SUP] = (300.0, 345.0)
-    pts[Landmark.LABIALE_INF] = (300.0, 365.0)
-    pts[Landmark.SUBLABIALE] = (300.0, 405.0)
 
     if roll_deg:
         c = np.array([300.0, 300.0], dtype=np.float32)
@@ -103,15 +93,11 @@ def test_mandibular_deviation_roll_invariance():
     assert abs(a.mand_deviation_deg - b.mand_deviation_deg) < 0.5
 
 
-# -- Proporcoes / perfil ----------------------------------------------------
-def test_proportions_and_profile_ranges():
+# -- Proporcoes -------------------------------------------------------------
+def test_proportions_ranges():
     p = compute_proportions(make_face())
     assert p.mouth_within_canon and p.fifths_ratio > 0
-    ang = compute_profile_angles(make_face())
-    for v in (ang.convexidade_facial, ang.convexidade_total, ang.nasofrontal,
-              ang.nasolabial, ang.labiomental):
-        assert 0.0 <= v <= 180.0
-    assert compute_profile_metrics(make_face()).facing in ("direito", "esquerdo")
+    assert p.thirds_ratio > 0 and p.intercanthal_alar_ratio > 0
 
 
 # -- Classificacao ----------------------------------------------------------
@@ -119,17 +105,8 @@ def test_classifications():
     assert classify_opening(50.0).category == "normal"
     assert classify_opening(30.0).category == "reduzida"
     assert classify_diduction(10.0).category == "normal"
-    assert "Classe I" in classify_profile(170.0).category
     assert classify_symmetry(0.95).category == "alta"
     assert "sem corte clinico" in classify_symmetry(0.95).note
-
-
-def test_profile_prominence_flags():
-    base = {k: v[0] for k, v in PROFILE_ANGLE_NORMS.items()}
-    a = ProfileAngles(150.0, base["convexidade_total"], base["nasofrontal"],
-                      base["nasolabial"], base["labiomental"])
-    f = next(x for x in classify_profile_prominence(a) if x.key == "convexidade_facial")
-    assert f.out_of_norm and "convexo" in f.category
 
 
 # -- Evolucao (compativel com o Sample do pipeline) -------------------------
