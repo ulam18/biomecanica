@@ -755,8 +755,12 @@ class MandibularApp:
             # do zero (nova pasta), mas a calibracao do paciente e preservada
             # -- ela ja foi zerada de amostras/ciclos por _clear_session, so
             # falta soltar o session_id/dir para o proximo _start_session
-            # criar uma pasta nova em vez de reaproveitar esta.
+            # criar uma pasta nova em vez de reaproveitar esta. _clear_session
+            # sobrescreveria a mensagem de sucesso com "sessao zerada"; guarda
+            # e restaura para o profissional ver a confirmacao do salvamento.
+            status_salvo = self.last_status
             self._clear_session(time.perf_counter() - self.t0)
+            self.last_status = status_salvo
 
     def _ensure_session_dir(self) -> None:
         if self.session_id is None:
