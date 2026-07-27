@@ -1,0 +1,91 @@
+% =====================================================================
+%  Referencias bibliograficas - padrao ABNT NBR 6023
+%  Estilo: abntex2cite com opcao [alf] (autor-data)
+%
+%  ATENCAO - VERIFICAR ANTES DE ENTREGAR:
+%  As entradas marcadas com "VERIFICAR" contem campos que precisam ser
+%  confirmados no exemplar fisico/digital efetivamente consultado
+%  (edicao, ano, editora, cidade, ISBN). Nao entregue o artigo sem
+%  conferir esses dados na fonte que voces usaram.
+% =====================================================================
+
+% ---------------------------------------------------------------------
+% VERIFICAR: edicao, ano e cidade conforme o exemplar consultado.
+% O capitulo 16 ("Cabeca - cranio e face") e as paginas 545-554 citadas
+% no texto vieram da numeracao impressa do exemplar usado na pesquisa
+% (ver docs/pesquisa_biomecanica.md). Confirme se a edicao de voces
+% corresponde ao ano informado abaixo.
+% ---------------------------------------------------------------------
+@book{dufour2016,
+    author    = {Dufour, Michel and Pillu, Michel},
+    title     = {Biomec{\^a}nica funcional: membros, cabe{\c c}a, tronco},
+    publisher = {Manole},
+    address   = {S{\~a}o Paulo},
+    year      = {2016},
+    note      = {Cap{\'i}tulo 16: Cabe{\c c}a (cr{\^a}nio e face)}
+}
+
+% ---------------------------------------------------------------------
+% Framework MediaPipe
+% ---------------------------------------------------------------------
+@misc{lugaresi2019,
+    author       = {Lugaresi, Camillo and Tang, Jiuqiang and Nash, Hadon
+                    and McClanahan, Chris and Uboweja, Esha and Hays, Michael
+                    and Zhang, Fan and Chang, Chuo-Ling and Yong, Ming Guang
+                    and Lee, Juhyun and Chang, Wan-Teh and Hua, Wei
+                    and Georg, Manfred and Grundmann, Matthias},
+    title        = {{MediaPipe}: A Framework for Building Perception Pipelines},
+    year         = {2019},
+    eprint       = {1906.08172},
+    archivePrefix= {arXiv},
+    primaryClass = {cs.DC},
+    url          = {https://arxiv.org/abs/1906.08172},
+    urlaccessdate= {26 jul. 2026}
+}
+
+% ---------------------------------------------------------------------
+% Malha facial em tempo real (modelo por tras do Face Landmarker)
+% ---------------------------------------------------------------------
+@inproceedings{kartynnik2019,
+    author    = {Kartynnik, Yury and Ablavatski, Artsiom
+                 and Grishchenko, Ivan and Grundmann, Matthias},
+    title     = {Real-time Facial Surface Geometry from Monocular Video
+                 on Mobile {GPUs}},
+    booktitle = {CVPR Workshop on Computer Vision for Augmented
+                 and Virtual Reality},
+    address   = {Long Beach, CA},
+    year      = {2019},
+    url       = {https://arxiv.org/abs/1907.06724},
+    urlaccessdate = {26 jul. 2026}
+}
+
+% ---------------------------------------------------------------------
+% OpenCV
+% ---------------------------------------------------------------------
+@article{bradski2000,
+    author  = {Bradski, Gary},
+    title   = {The {OpenCV} Library},
+    journal = {Dr. Dobb's Journal of Software Tools},
+    volume  = {25},
+    number  = {11},
+    pages   = {120--125},
+    year    = {2000}
+}
+
+% =====================================================================
+%  ENTRADAS NAO CITADAS NO TEXTO ATUAL
+%  Descomente e complete se decidirem usar.
+% =====================================================================
+
+% VERIFICAR: referencia citada em src/mandibular/classification.py como
+% "Carlini & Gomes (2005)", a proposito da ordem de grandeza do desvio de
+% mento em casos cirurgicos severos. Faltam titulo, periodico, volume e
+% paginas. Localize a fonte original antes de citar - nao cite de segunda
+% mao a partir do comentario no codigo.
+%
+% @article{carlini2005,
+%     author  = {Carlini, Jo{\~a}o Luiz and Gomes, Km},
+%     title   = {TITULO A CONFIRMAR},
+%     journal = {PERIODICO A CONFIRMAR},
+%     year    = {2005}
+% }

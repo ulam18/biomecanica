@@ -31,7 +31,15 @@ from dataclasses import dataclass
 from .config import QualityConfig
 from .filters import EMAFilter
 from .landmarks import FaceLandmarks
-from .metrics import FrameMetrics, compute_frame_metrics, lateral_direction
+from .metrics import (
+    FrameMetrics,
+    FrontalAngles,
+    SymmetryMetrics,
+    compute_frame_metrics,
+    compute_frontal_angles,
+    compute_symmetry,
+    lateral_direction,
+)
 from .quality import FrameQuality, QualityResult, assess_quality
 
 
@@ -49,6 +57,10 @@ class FrameResult:
     lateral_display: float             # lateral_absolute para exibicao
     lateral_dynamic_display: float     # lateral_dynamic para exibicao
     direction: str                     # "direita"/"esquerda"/"centro"; "centro" se invalido
+    # Analise facial frontal do mesmo quadro. Seguem a mesma regra dos demais
+    # campos: so sao calculadas em quadro valido; None caso contrario.
+    symmetry: SymmetryMetrics | None = None
+    angles: FrontalAngles | None = None
 
 
 def process_frame(
@@ -67,10 +79,18 @@ def process_frame(
     frame_valid = quality.quality == FrameQuality.VALIDA
     m = compute_frame_metrics(face, ref_mm) if face is not None else None
 
+    symmetry = None
+    angles = None
+
     if frame_valid and m is not None:
         opening_filt = filt_opening.update(m.opening_rel)
         lateral_filt = filt_lateral.update(m.lateral_rel)
         filt_face_width.update(m.face_width_px)
+        # Simetria e angulos frontais: mesma face, mesmo quadro valido. Ficam
+        # aqui (e nao no app) para que o modo ao vivo e a analise offline
+        # gravem exatamente as mesmas colunas.
+        symmetry = compute_symmetry(face)
+        angles = compute_frontal_angles(face)
     else:
         opening_filt = None
         lateral_filt = None
@@ -117,4 +137,6 @@ def process_frame(
         lateral_display=lateral_display,
         lateral_dynamic_display=lateral_dynamic_display,
         direction=direction,
+        symmetry=symmetry,
+        angles=angles,
     )

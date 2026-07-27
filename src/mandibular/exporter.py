@@ -1,9 +1,10 @@
 """
 Exportacao da sessao: cria uma pasta propria com CSV, resumo, metadados,
-graficos e (opcionalmente) o video anotado.
+graficos, relatorio legivel e (opcionalmente) o video anotado.
 
-Usa um identificador anonimo por padrao (sessao_AAAA-MM-DD_HH-MM-SS), sem
-nome de paciente.
+Usa um identificador anonimo por padrao (sessao_AAAA-MM-DD_HH-MM-SS). O nome
+do paciente e opcional: quando informado, entra no relatorio e no historico de
+evolucao daquele paciente.
 """
 
 from __future__ import annotations
@@ -15,12 +16,14 @@ from datetime import datetime
 
 import numpy as np
 
+from .evolution import append_evolution, evolution_path, summarize_session
 from .metrics import (
     REL_UNIT_DESCRIPTION,
     CycleDetector,
     cycle_predominant_direction,
     lateral_direction,
 )
+from .pdf_report import write_pdf_report
 from .plotting import (
     plot_cycles_mean_band,
     plot_cycles_normalized,
@@ -31,6 +34,7 @@ from .plotting import (
     plot_trajectory_dynamic,
 )
 from .recorder import SessionRecorder, assign_cycle_ids
+from .report import build_report_data, write_report
 
 DISCLAIMER = (
     "Ferramenta de apoio funcional/didatico; nao substitui avaliacao "
@@ -138,6 +142,9 @@ def export_session(
     video_path: str | None = None,
     extra_metadata: dict | None = None,
     mirrored: bool = True,
+    paciente: str = "",
+    observacoes: str = "",
+    history_dir: str | None = None,
 ) -> dict[str, str]:
     """Exporta a sessao na pasta `session_dir`; retorna os caminhos gerados."""
     if recorder.is_empty:
@@ -275,6 +282,7 @@ def export_session(
         "lateral_baseline_std": cycles.lateral_baseline_std,
         "direction_noise_multiplier": cycles.config.direction_noise_multiplier,
         "effective_direction_deadzone": cycles.effective_direction_deadzone,
+        "paciente": paciente,
     }
     if extra_metadata:
         metadados.update(extra_metadata)
@@ -285,5 +293,46 @@ def export_session(
 
     if video_path and os.path.exists(video_path):
         paths["video"] = video_path
+
+    # Relatorios legiveis: mesma informacao do resumo.json, em linguagem
+    # clinica. HTML e PDF sao gerados da MESMA agregacao e da mesma analise
+    # medida a medida (report.build_findings), para nao divergirem.
+    dados_relatorio = build_report_data(recorder, cycles, ref_mm)
+    figuras = {
+        "Abertura da boca ao longo do tempo": paths["abertura_png"],
+        "Desvio lateral ao longo do tempo": paths["lateral_png"],
+        "Trajetória (abertura x desvio lateral)": paths["trajetoria_png"],
+    }
+    paths["relatorio"] = write_report(
+        os.path.join(session_dir, "relatorio.html"),
+        dados_relatorio,
+        session_id,
+        paciente=paciente,
+        figuras=figuras,
+        observacoes=observacoes,
+    )
+    paths["relatorio_pdf"] = write_pdf_report(
+        os.path.join(session_dir, "relatorio.pdf"),
+        dados_relatorio,
+        session_id,
+        paciente=paciente,
+        figuras=figuras,
+        observacoes=observacoes,
+    )
+
+    # Historico do paciente: uma linha-resumo por sessao, para acompanhar a
+    # evolucao entre atendimentos. So faz sentido com o paciente identificado.
+    if paciente.strip():
+        hist_dir = history_dir or os.path.dirname(os.path.abspath(session_dir))
+        try:
+            paths["historico"] = append_evolution(
+                evolution_path(hist_dir, paciente),
+                summarize_session(
+                    recorder, cycles, paciente,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+        except ValueError:
+            pass  # sessao sem frames validos: nada a acrescentar ao historico
 
     return paths

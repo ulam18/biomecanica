@@ -4,6 +4,10 @@ models/*.task
 # Resultados de sessoes
 resultados/
 
+# Gerados na instalacao (INSTALAR.bat / criar_atalho.py)
+assets/icone.ico
+Analise Mandibular.bat
+
 # Python
 __pycache__/
 *.pyc

@@ -21,6 +21,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import webbrowser
+from pathlib import Path
 
 import numpy as np
 
@@ -30,6 +32,7 @@ import cv2  # noqa: E402
 
 from mandibular.config import AppConfig, Landmark  # noqa: E402
 from mandibular.exporter import export_session, make_session_id  # noqa: E402
+from mandibular.feedback import biofeedback_messages  # noqa: E402
 from mandibular.filters import EMAFilter  # noqa: E402
 from mandibular.landmarks import FaceMeshDetector  # noqa: E402
 from mandibular.metrics import CycleDetector, lateral_direction  # noqa: E402
@@ -50,6 +53,8 @@ def analyze(
     output_dir: str,
     save_video: bool,
     mirrored: bool,
+    paciente: str = "",
+    abrir_relatorio: bool = False,
 ) -> None:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Video nao encontrado: {path}")
@@ -233,6 +238,15 @@ def analyze(
                 lateral_neutral_baseline=lateral_baseline,
                 lateral_dynamic_raw=lateral_dynamic_raw,
                 lateral_dynamic_filtered=lateral_dynamic_filtered,
+                symmetry_index=(fr.symmetry.index if fr.symmetry else None),
+                midline_offset_rel=(
+                    fr.symmetry.midline_offset_rel if fr.symmetry else None
+                ),
+                cant_deg=(fr.symmetry.cant_deg if fr.symmetry else None),
+                mand_deviation_deg=(fr.angles.mand_deviation_deg if fr.angles else None),
+                is_frontal=(fr.symmetry.is_frontal if fr.symmetry else None),
+                biofeedback=(" | ".join(msgs) if (msgs := biofeedback_messages(
+                    fr.opening_display, direction, cycles, fr.quality)) else None),
             )
         )
 
@@ -296,7 +310,13 @@ def analyze(
                 "reject_multiple_faces": cfg.quality.reject_multiple_faces,
             },
         },
+        paciente=paciente,
+        history_dir=output_dir,
     )
+
+    alvo = paths.get("relatorio_pdf") or paths.get("relatorio")
+    if abrir_relatorio and alvo:
+        webbrowser.open(Path(alvo).resolve().as_uri())
 
     _print_summary(recorder, cycles, ref_mm)
     print(f"\n[export] pasta: {session_dir}")
@@ -366,9 +386,13 @@ def main() -> None:
     p.add_argument("--mirrored", action="store_true",
                    help="trata o video como espelhado ao rotular a direcao do desvio")
     p.add_argument("--output", default="resultados", help="pasta de saida")
+    p.add_argument("--paciente", default="", help="nome do paciente (opcional)")
+    p.add_argument("--abrir-relatorio", action="store_true",
+                   help="abre o relatorio da sessao no navegador ao terminar")
     a = p.parse_args()
     try:
-        analyze(a.video, a.ref_mm, a.calib_auto, a.output, a.save_video, a.mirrored)
+        analyze(a.video, a.ref_mm, a.calib_auto, a.output, a.save_video, a.mirrored,
+                paciente=a.paciente, abrir_relatorio=a.abrir_relatorio)
     except (FileNotFoundError, RuntimeError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         sys.exit(1)

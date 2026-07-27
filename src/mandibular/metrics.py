@@ -837,9 +837,12 @@ class CycleDetector:
 
 
 # ===========================================================================
-# Analise facial frontal (simetria/proporcoes) e de perfil (angulos)
-# Modulos adicionados sobre a arquitetura de pipeline: funcoes puras que
-# recebem FaceLandmarks e nao dependem do recorder/app.
+# Analise facial frontal (simetria, angulos e proporcoes)
+# Funcoes puras que recebem FaceLandmarks e nao dependem do recorder/app.
+#
+# O sistema trabalha APENAS com a vista frontal. A analise de perfil (plano
+# sagital) foi removida: em 2D, sem controle de distancia nem de rotacao da
+# cabeca, as projecoes e angulos sagitais nao se mostraram confiaveis.
 # ===========================================================================
 def _face_frame(face: FaceLandmarks) -> tuple[float, np.ndarray, np.ndarray]:
     """
@@ -857,18 +860,6 @@ def _face_frame(face: FaceLandmarks) -> tuple[float, np.ndarray, np.ndarray]:
     x_face = _unit(eye_r - eye_l)
     y_face = np.array([-x_face[1], x_face[0]], dtype=np.float32)
     return face_width, x_face, y_face
-
-
-def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """Angulo (graus) no vertice b, formado pelos segmentos b->a e b->c."""
-    v1 = a - b
-    v2 = c - b
-    n1 = float(np.linalg.norm(v1))
-    n2 = float(np.linalg.norm(v2))
-    if n1 < 1e-6 or n2 < 1e-6:
-        return 0.0
-    cos = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
-    return float(np.degrees(np.arccos(cos)))
 
 
 def _cant_deg(face: FaceLandmarks) -> float:
@@ -1034,98 +1025,3 @@ def compute_proportions(face: FaceLandmarks) -> ProportionMetrics:
     )
 
 
-@dataclass
-class ProfileMetrics:
-    """
-    Metricas do rosto em vista de perfil (plano sagital) -- ESTIMATIVAS. A
-    simetria E->D NAO e mensuravel de perfil.
-    """
-    facing: str
-    chin_projection_rel: float
-    nose_projection_rel: float
-    convexity_deg: float
-    opening_rel: float
-    yaw_proxy: float
-
-
-def compute_profile_metrics(face: FaceLandmarks) -> ProfileMetrics:
-    """Calcula metricas sagitais do rosto de perfil."""
-    face_width, x_face, y_face = _face_frame(face)
-    nasion = face.point(Landmark.NASION)
-    chin = face.point(Landmark.CHIN)
-
-    face_height = float(np.linalg.norm(chin - nasion))
-    if face_height < 1e-6:
-        face_height = 1e-6
-
-    def horiz(idx: int) -> float:
-        return float(np.dot(face.point(idx) - nasion, x_face))
-
-    nose_h = horiz(Landmark.NOSE_TIP)
-    chin_h = horiz(Landmark.CHIN)
-    facing = "direito" if nose_h >= 0 else "esquerdo"
-
-    def uv_pt(idx: int) -> np.ndarray:
-        p = face.point(idx) - nasion
-        return np.array([np.dot(p, x_face), np.dot(p, y_face)], dtype=np.float32)
-
-    convexity = _angle_deg(
-        uv_pt(Landmark.FOREHEAD), uv_pt(Landmark.SUBNASALE), uv_pt(Landmark.CHIN)
-    )
-
-    upper = face.point(Landmark.UPPER_LIP_INNER)
-    lower = face.point(Landmark.LOWER_LIP_INNER)
-    opening_rel = abs(float(np.dot(lower - upper, y_face))) / face_width
-
-    if face.has_depth:
-        z_l = face.z(Landmark.EYE_OUTER_LEFT)
-        z_r = face.z(Landmark.EYE_OUTER_RIGHT)
-        yaw_proxy = (z_l - z_r) / face_width
-    else:
-        yaw_proxy = nose_h / (face_width / 2.0)
-
-    return ProfileMetrics(
-        facing=facing,
-        chin_projection_rel=chin_h / face_height,
-        nose_projection_rel=nose_h / face_height,
-        convexity_deg=convexity,
-        opening_rel=opening_rel,
-        yaw_proxy=float(yaw_proxy),
-    )
-
-
-@dataclass
-class ProfileAngles:
-    """
-    Angulos de tecido mole do perfil (graus) -- ESTIMATIVAS 2D.
-
-    - `convexidade_facial`: G-Sn-Pg.
-    - `convexidade_total`: G-Prn-Pg (inclui o nariz).
-    - `nasofrontal`: G-N-Prn.
-    - `nasolabial`: ~Prn-Sn-Ls.
-    - `labiomental`: Li-Sm-Pg.
-    """
-    convexidade_facial: float
-    convexidade_total: float
-    nasofrontal: float
-    nasolabial: float
-    labiomental: float
-
-
-def compute_profile_angles(face: FaceLandmarks) -> ProfileAngles:
-    """Calcula os angulos de perfil de tecido mole."""
-    g = face.point(Landmark.GLABELA)
-    n = face.point(Landmark.NASION)
-    prn = face.point(Landmark.NOSE_TIP)
-    sn = face.point(Landmark.SUBNASALE)
-    pg = face.point(Landmark.CHIN)
-    ls = face.point(Landmark.LABIALE_SUP)
-    li = face.point(Landmark.LABIALE_INF)
-    sm = face.point(Landmark.SUBLABIALE)
-    return ProfileAngles(
-        convexidade_facial=_angle_deg(g, sn, pg),
-        convexidade_total=_angle_deg(g, prn, pg),
-        nasofrontal=_angle_deg(g, n, prn),
-        nasolabial=_angle_deg(prn, sn, ls),
-        labiomental=_angle_deg(li, sm, pg),
-    )

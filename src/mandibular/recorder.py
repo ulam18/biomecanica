@@ -57,6 +57,16 @@ CSV_COLUMNS = [
     "estado_ciclo",
     "repeticoes",
     "aviso_qualidade",
+    # Analise facial frontal (vista frontal apenas).
+    "simetria_indice",
+    "simetria_linha_media",
+    "cant_graus",
+    "desvio_mandibular_graus",
+    "frontal",
+    # Biofeedback exibido ao usuario naquele quadro (multiplas mensagens
+    # separadas por " | "). Persistido para que o relatorio possa reportar o
+    # que o paciente viu durante a sessao, e nao so o resultado final.
+    "biofeedback",
 ]
 
 
@@ -101,6 +111,16 @@ class Sample:
     lateral_dynamic_filtered: float | None = None
     cycle_id: int | None = None  # preenchido por assign_cycle_ids() na exportacao
 
+    # -- Analise facial frontal ------------------------------------------
+    # Opcionais com default None: quadro invalido nao produz estas medidas,
+    # e os testes/codigos que constroem um Sample minimo continuam validos.
+    symmetry_index: float | None = None        # 0..1 (1 = simetrico)
+    midline_offset_rel: float | None = None    # deslocamento medio dos pares
+    cant_deg: float | None = None              # olhos x boca
+    mand_deviation_deg: float | None = None    # linha media mandibular
+    is_frontal: bool | None = None             # rosto suficientemente frontal
+    biofeedback: str | None = None             # mensagens exibidas no quadro
+
     def to_row(self) -> list:
         def fmt(v: float | None, decimals: int) -> str:
             return "" if v is None else f"{v:.{decimals}f}"
@@ -136,6 +156,12 @@ class Sample:
             self.cycle_state.value,
             self.repetitions,
             self.quality_warning or "",
+            fmt(self.symmetry_index, 4),
+            fmt(self.midline_offset_rel, 6),
+            fmt(self.cant_deg, 2),
+            fmt(self.mand_deviation_deg, 2),
+            "" if self.is_frontal is None else int(self.is_frontal),
+            self.biofeedback or "",
         ]
 
 
